@@ -73,7 +73,8 @@ async def on_ready():
         allowed_channel = guild_cfg.get("command_channel")
         return allowed_channel is None or interaction.channel_id == allowed_channel
 
-    bot.tree.set_check(global_command_channel_check)
+    bot.add_check(global_command_channel_check)
+
 
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
     try:
@@ -689,7 +690,7 @@ async def on_raw_reaction_add(payload):
     save_json(HISTORY_FILE, history)
 
 
-bot.tree.set_check(global_command_channel_check)
+bot.add_check(global_command_channel_check)
 
 
 bot.run(os.getenv("DISCORD_TOKEN"))
