@@ -8,7 +8,10 @@ from discord import app_commands, Interaction
 import asyncio
 import json
 import os
+import datetime
 from datetime import datetime
+import zipfile
+
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -137,52 +140,67 @@ async def setup(interaction: Interaction, channel: discord.TextChannel, role: di
     save_json(CONFIG_FILE, config)
     await interaction.response.send_message(f"✅ Setup complete!\nRequests will go to {channel.mention}.\nAdmin role: `{role.name}`\nEmojis: 🪙 {gold} • {silver} • {copper}")
 
-@bot.tree.command(name="backup", description="Admin only: download full backup (config, balances, history).")
+
+
+@bot.tree.command(name="backup", description="Admin only: Download all server data as a zip.")
 @app_commands.checks.has_permissions(administrator=True)
 async def backup_command(interaction: discord.Interaction):
     try:
-        now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"full_backup_{now}.json"
+        # Create an in-memory ZIP file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for filename in [BALANCES_FILE, HISTORY_FILE, CONFIG_FILE, NAME_CACHE_FILE]:
+                try:
+                    with open(filename, "r", encoding="utf-8") as f:
+                        zip_file.writestr(filename, f.read())
+                except FileNotFoundError:
+                    zip_file.writestr(filename, "{}")  # fallback: empty object
 
-        backup_data = {
-            "config": load_json(CONFIG_FILE),
-            "balances": load_json(BALANCES_FILE),
-            "history": load_json(HISTORY_FILE)
-        }
+        zip_buffer.seek(0)
+        now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        discord_file = discord.File(zip_buffer, filename=f"currency_backup_{now}.zip")
 
-        with open(filename, "w") as f:
-            json.dump(backup_data, f, indent=2)
+        await interaction.response.send_message("📦 Backup created!", file=discord_file, ephemeral=True)
 
-        await interaction.response.send_message(
-            "📦 Backup file ready.",
-            files=[File(filename)],
-            ephemeral=True
-        )
     except Exception as e:
         await interaction.response.send_message(f"❌ Failed to create backup: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="restore", description="Restore full backup (Admins only).")
-@app_commands.checks.has_permissions(administrator=True)
+
+@bot.tree.command(name="restore", description="Bot owner only: Restore data from a zip backup.")
+@app_commands.checks.is_owner()
 async def restore_command(interaction: discord.Interaction, file: discord.Attachment):
     try:
-        # Download and parse uploaded file
-        backup_bytes = await file.read()
-        backup_data = json.loads(backup_bytes.decode())
-
-        # Validate backup content
-        if not all(k in backup_data for k in ("config", "balances", "history")):
-            await interaction.response.send_message("❌ Invalid backup file format.", ephemeral=True)
+        if not file.filename.endswith(".zip"):
+            await interaction.response.send_message("❌ Please upload a `.zip` file.", ephemeral=True)
             return
 
-        # Save each section to its respective file
-        save_json(CONFIG_FILE, backup_data["config"])
-        save_json(BALANCES_FILE, backup_data["balances"])
-        save_json(HISTORY_FILE, backup_data["history"])
+        content = await file.read()
+        zip_buffer = io.BytesIO(content)
 
-        await interaction.response.send_message("✅ Backup restored successfully!", ephemeral=True)
+        with zipfile.ZipFile(zip_buffer, "r") as zip_file:
+            for name in zip_file.namelist():
+                with zip_file.open(name) as f:
+                    try:
+                        decoded = f.read().decode("utf-8")
+                        data = json.loads(decoded)
+                        if "balance" in name:
+                            save_json(BALANCES_FILE, data)
+                        elif "history" in name:
+                            save_json(HISTORY_FILE, data)
+                        elif "config" in name:
+                            save_json(CONFIG_FILE, data)
+                        elif "name_cache" in name:
+                            save_json(NAME_CACHE_FILE, data)
+                    except Exception as inner_e:
+                        print(f"Skipping {name}: {inner_e}")
+
+        await interaction.response.send_message("✅ Restore successful!", ephemeral=True)
+
     except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to restore backup: {e}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Restore failed: {e}", ephemeral=True)
+
+
 
 
 @bot.tree.command(name="give", description="Admin: Grant currency to a user.")
@@ -268,34 +286,55 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
         await interaction.response.send_message("❌ An internal error occurred while processing your request.", ephemeral=True)
 
 
-@bot.tree.command(name="balances", description="Admin only: View all user balances in this server.")
+NAME_CACHE_FILE = "name_cache.json"
+
+@bot.tree.command(name="balances", description="Admin only: List all user balances.")
 @app_commands.checks.has_permissions(administrator=True)
 async def balances_command(interaction: discord.Interaction):
-    try:
-        balances = load_json(BALANCES_FILE)
-        guild = interaction.guild
+    await interaction.response.defer(thinking=True, ephemeral=True)
 
-        if not balances:
-            await interaction.response.send_message("📭 No balances found.", ephemeral=True)
-            return
+    try:
+        data = load_json(BALANCES_FILE)
+        cfg = config.get(str(interaction.guild.id), {})
+        emotes = cfg.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+
+        name_cache = load_json(NAME_CACHE_FILE)
+        updated = False
 
         lines = []
-        for uid, amount in balances.items():
-            try:
-                member = guild.get_member(int(uid))
-                name = member.display_name if member else f"User {uid}"
-                lines.append(f"{name}: {format_currency(amount, guild.id)}")
-            except Exception as inner_e:
-                lines.append(f"(Error reading user {uid}): {amount}c")
 
-        message = "\n".join(lines)
-        if len(message) > 1900:
-            message = message[:1900] + "\n...(truncated)"
+        for uid, amount in data.items():
+            if uid in name_cache:
+                name = name_cache[uid]
+            else:
+                try:
+                    member = await interaction.guild.fetch_member(int(uid))
+                    name = member.display_name
+                except discord.NotFound:
+                    name = f"User {uid}"
+                except Exception as e:
+                    name = f"Unknown ({uid})"
+                name_cache[uid] = name
+                updated = True
 
-        await interaction.response.send_message(f"📊 **All User Balances:**\n{message}", ephemeral=True)
+            g = amount // 10000
+            s = (amount % 10000) // 100
+            c = amount % 100
+
+            lines.append(f"{name}: {g}{emotes['gold']} {s:02}{emotes['silver']} {c:02}{emotes['copper']}")
+
+        if updated:
+            save_json(NAME_CACHE_FILE, name_cache)
+
+        if not lines:
+            await interaction.followup.send("📊 No balances found.", ephemeral=True)
+            return
+
+        msg = "**📊 All User Balances:**\n" + "\n".join(lines)
+        await interaction.followup.send(msg, ephemeral=True)
 
     except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to retrieve balances: `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ Failed to load balances: {e}", ephemeral=True)
 
 
 
