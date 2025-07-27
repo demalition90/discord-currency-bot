@@ -67,14 +67,21 @@ def is_admin(interaction: Interaction):
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user.name}")
+    async def global_command_channel_check(interaction: discord.Interaction) -> bool:
+        config = load_json(CONFIG_FILE)
+        guild_cfg = config.get(str(interaction.guild_id), {})
+        allowed_channel = guild_cfg.get("command_channel")
+        return allowed_channel is None or interaction.channel_id == allowed_channel
+
+    bot.tree.set_check(global_command_channel_check)
+
+    print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} commands")
+        print(f"🔁 Synced {len(synced)} commands.")
     except Exception as e:
-        print(f"⚠️ Sync failed: {e}")
+        print(f"❌ Error syncing commands: {e}")
 
-import os  # Add this at the top of your file if not already imported
 
 
 # Global check: only allow commands in designated channel (if set)
