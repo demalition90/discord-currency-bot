@@ -197,7 +197,7 @@ async def restore(interaction: Interaction, file: discord.Attachment):
 
 @bot.tree.command(name="give", description="Admin-only: Grant currency to a user.")
 @app_commands.describe(user="The user to give currency to", reason="Reason for the grant")
-@is_admin()
+@app_commands.check(lambda i: is_admin(i))
 async def give(interaction: Interaction, user: discord.Member, gold: int, silver: int, copper: int, reason: str):
     balances = load_json(BALANCES_FILE)
     uid = str(user.id)
