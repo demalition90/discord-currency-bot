@@ -196,7 +196,7 @@ async def restore(interaction: Interaction, file: discord.Attachment):
 
 @bot.tree.command(name="give", description="Admin-only: Grant currency to a user.")
 @app_commands.describe(user="The user to give currency to", amount="Amount in copper", reason="Reason for the grant")
-@is_admin()
+@check(is_admin)
 async def give(interaction: Interaction, user: discord.Member, amount: int, reason: str):
     balances = load_json(BALANCES_FILE)
     uid = str(user.id)
@@ -289,7 +289,7 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
         print(f"[ERROR] /balance failed: {e}")
         await interaction.response.send_message("❌ An internal error occurred while processing your request.", ephemeral=True)
 @bot.tree.command(name="balances", description="Admin only: View all user balances.")
-@is_admin()
+@check(is_admin)
 async def balances_command(interaction: Interaction):
     await interaction.response.defer(thinking=True)
 
@@ -508,7 +508,7 @@ async def help_command(interaction: Interaction):
 
 
 @bot.tree.command(name="settings", description="View current bot settings.")
-@is_admin()
+@check(is_admin)
 async def settings_command(interaction: Interaction):
     config = load_json(CONFIG_FILE).get(str(interaction.guild.id))
     if not config:
