@@ -13,6 +13,8 @@ import datetime
 from datetime import datetime
 import zipfile
 import logging
+from typing import Optional
+
 
 logging.basicConfig(level=logging.INFO)
 
