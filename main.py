@@ -368,38 +368,43 @@ NAME_CACHE_FILE = "name_cache.json"
 
 
 @bot.tree.command(name="balances", description="Admin only: view all user balances.")
-@app_commands.checks.has_permissions(administrator=True)
 async def balances_command(interaction: discord.Interaction):
+    """Display balances for all users. Requires one of the configured admin roles."""
     # Ensure this command runs only in the designated request channel
     if not await enforce_request_channel(interaction):
         return
+    # Require custom admin role; deny access to others quickly
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ You are not authorized to view all balances.",
+                                              ephemeral=True)
+        return
     try:
         balances = load_json(BALANCES_FILE)
+        if not balances:
+            await interaction.response.send_message("📊 No balances found.",
+                                                  ephemeral=True)
+            return
+        # Defer before compiling the list to avoid timeouts
+        await interaction.response.defer(ephemeral=True, thinking=True)
         config = load_json(CONFIG_FILE)
         emojis = config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
         name_cache = {}
-
-        if not balances:
-            await interaction.response.send_message("📊 No balances found.", ephemeral=True)
-            return
-
-        # Defer before compiling the list to avoid timing out
-        await interaction.response.defer(ephemeral=True, thinking=True)
         msg = "**📊 All User Balances:**\n"
         for user_id, balance in balances.items():
             if user_id not in name_cache:
                 try:
-                    user = await interaction.client.fetch_user(int(user_id))
-                    name_cache[user_id] = user.name
+                    user_obj = await interaction.client.fetch_user(int(user_id))
+                    name_cache[user_id] = user_obj.name
                 except Exception:
                     name_cache[user_id] = f"User {user_id}"
             name = name_cache[user_id]
             msg += f"{name}: {format_currency(balance, emojis)}\n"
-
         await interaction.followup.send(msg,
                                        ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to load balances: {e}", ephemeral=True)
+        # Use followup since we've deferred at this point
+        await interaction.followup.send(f"❌ Failed to load balances: {e}",
+                                       ephemeral=True)
 
 
 
@@ -540,37 +545,47 @@ async def transfer_command(
 @bot.tree.command(name="transactions", description="View your recent transactions.")
 @app_commands.describe(user="User to view (admin only)")
 async def transactions_command(interaction: discord.Interaction, user: discord.User = None):
+    """Show recent transactions. Viewing another user's history requires an admin role."""
     # Ensure this command runs only in the designated request channel
     if not await enforce_request_channel(interaction):
         return
-    if user and not is_admin(interaction):
-        await interaction.response.send_message("❌ You don't have permission to view other users' transactions.", ephemeral=True)
-        return
-
-    # Defer before fetching transaction history to avoid timing out
+    # Defer immediately so that follow‑up messages can be used for all cases
     await interaction.response.defer(ephemeral=True, thinking=True)
-
-    user_id = str(user.id if user else interaction.user.id)
-    history = load_json(HISTORY_FILE)
-    config = load_json(CONFIG_FILE)
-    emojis = config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
-
-    user_history = history.get(user_id, [])
-    if not user_history:
-        await interaction.followup.send(
-            "📜 No transaction history found.",
-            ephemeral=True
-        )
-        return
-
-    msg = "**📜 Your last 10 transactions:**\n"
-    for entry in reversed(user_history[-10:]):
-        sign = "+" if entry["type"] == "grant" else "-"
-        amount_str = format_currency(entry["amount"], emojis)
-        msg += f"{sign}{amount_str} — {entry['type'].capitalize()} ({entry['reason']})\n"
-
-    await interaction.followup.send(msg,
-                                   ephemeral=True)
+    try:
+        # If a specific user is requested, ensure the caller has an admin role
+        if user and not is_admin(interaction):
+            await interaction.followup.send(
+                "❌ You don't have permission to view other users' transactions.",
+                ephemeral=True
+            )
+            return
+        # Identify the target user
+        target_id = str(user.id if user else interaction.user.id)
+        history = load_json(HISTORY_FILE)
+        # Retrieve history list for the user
+        user_history = history.get(target_id, [])
+        if not user_history:
+            await interaction.followup.send(
+                "📜 No transaction history found.",
+                ephemeral=True
+            )
+            return
+        # Build the summary of up to 10 recent transactions
+        msg = "**📜 Your last 10 transactions:**\n"
+        for entry in reversed(user_history[-10:]):
+            # Determine a sign based on transaction type
+            sign = "+" if entry.get("type") in ("grant", "transfer_in", "request") else "-"
+            amount_str = format_currency(entry.get("amount"), interaction.guild.id)
+            reason = entry.get("reason", "")
+            tx_type = entry.get("type", "").replace("_", " ").capitalize()
+            msg += f"{sign}{amount_str} — {tx_type} ({reason})\n"
+        await interaction.followup.send(msg,
+                                       ephemeral=True)
+    except Exception as e:
+        # Log and report unexpected errors
+        print(f"[ERROR] /transactions failed: {e}")
+        await interaction.followup.send("❌ An internal error occurred while processing your request.",
+                                       ephemeral=True)
 
 
 
