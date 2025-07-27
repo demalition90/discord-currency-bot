@@ -217,41 +217,61 @@ async def settings_command(interaction: Interaction):
         f"Emoji: {{'g': '{emoji['g']}', 's': '{emoji['s']}', 'c': '{emoji['c']}'}}"
     )
 
-@bot.tree.command(name="give", description="Admin-only: Grant currency to a user")
-@app_commands.check(is_admin_check())
+@bot.tree.command(name="give", description="Admin: Give currency")
+@commands.check(is_admin)
 async def give(interaction: discord.Interaction, user: discord.Member, amount: str, reason: str):
-    guild_id = str(interaction.guild_id)
-    user_id = str(user.id)
-    delta = parse_amount(amount)
+    config = get_config(interaction.guild_id)
+    emoji = config.get("emoji", DEFAULT_EMOJIS)
+
+    try:
+        delta = parse_amount(amount)
+        if delta <= 0:
+            raise ValueError
+    except:
+        await interaction.response.send_message("⚠️ Invalid amount format.")
+        return
 
     balances = load_json(BALANCE_FILE)
+    guild_id = str(interaction.guild_id)
+    user_id = str(user.id)
     balances.setdefault(guild_id, {}).setdefault(user_id, 0)
     balances[guild_id][user_id] += delta
     save_json(BALANCE_FILE, balances)
 
-    log_transaction(guild_id, "admin-give", user_id, delta, reason)
-    new_balance = balances[guild_id][user_id]
+    log_transaction(guild_id, "give", user_id, delta, reason)
     await interaction.response.send_message(
-        f"✅ Granted {format_currency(delta)} to {user.mention}. New balance: {format_currency(new_balance)}"
+        f"✅ Granted {format_currency(delta, emoji)} to {user.mention}. "
+        f"New balance: {format_currency(balances[guild_id][user_id], emoji)}"
     )
 
-@bot.tree.command(name="take", description="Admin-only: Deduct currency from a user")
-@app_commands.check(is_admin_check())
+
+@bot.tree.command(name="take", description="Admin: Take currency")
+@commands.check(is_admin)
 async def take(interaction: discord.Interaction, user: discord.Member, amount: str, reason: str):
-    guild_id = str(interaction.guild_id)
-    user_id = str(user.id)
-    delta = parse_amount(amount)
+    config = get_config(interaction.guild_id)
+    emoji = config.get("emoji", DEFAULT_EMOJIS)
+
+    try:
+        delta = parse_amount(amount)
+        if delta <= 0:
+            raise ValueError
+    except:
+        await interaction.response.send_message("⚠️ Invalid amount format.")
+        return
 
     balances = load_json(BALANCE_FILE)
+    guild_id = str(interaction.guild_id)
+    user_id = str(user.id)
     balances.setdefault(guild_id, {}).setdefault(user_id, 0)
     balances[guild_id][user_id] -= delta
     save_json(BALANCE_FILE, balances)
 
-    log_transaction(guild_id, "admin-take", user_id, -delta, reason)
-    new_balance = balances[guild_id][user_id]
+    log_transaction(guild_id, "take", user_id, -delta, reason)
     await interaction.response.send_message(
-        f"❌ Deducted {format_currency(delta)} from {user.mention}. New balance: {format_currency(new_balance)}"
+        f"✅ Deducted {format_currency(delta, emoji)} from {user.mention}. "
+        f"New balance: {format_currency(balances[guild_id][user_id], emoji)}"
     )
+
 
 
 @bot.tree.command(name="balance", description="View your balance or another user's (admin only)")
@@ -349,63 +369,150 @@ async def rescan_requests(interaction: Interaction):
     await interaction.response.send_message(f"✅ Reposted {reposted} request(s) for review.")
 
 
-@bot.tree.command(name="transfer", description="Request to send currency to another user (requires approval)")
-async def transfer(interaction: discord.Interaction, to: discord.Member, amount: str, reason: str):
-    if to.id == interaction.user.id:
-        await interaction.response.send_message("🙃 You can't transfer to yourself.", ephemeral=True)
+@bot.tree.command(name="transfer", description="Transfer currency to another user")
+@app_commands.describe(
+    to_user="User to receive currency",
+    amount="Amount to transfer (e.g. 1g 25s 50c)",
+    reason="Reason for the transfer",
+    from_user="(Admin) User to send from (optional)"
+)
+async def transfer(interaction: discord.Interaction, to_user: discord.User, amount: str, reason: str, from_user: Optional[discord.User] = None):
+    config = get_config(interaction.guild_id)
+    if not config:
+        await interaction.response.send_message("❌ Bot is not configured. Please run `/setup` first.", ephemeral=True)
         return
 
-    config = load_json(CONFIG_FILE).get(str(interaction.guild_id), {})
-    request_channel_id = config.get("request_channel")
+    emoji_map = config["emoji"]
+    command_channel = config["command_channel"]
+    request_channel = config["request_channel"]
 
-    if not request_channel_id:
-        await interaction.response.send_message("⚠️ Request channel not set. Please run `/setup`.", ephemeral=True)
+    # Check correct channel
+    if interaction.channel_id != command_channel:
+        await interaction.response.send_message("❌ Please use this command in the designated bot commands channel.", ephemeral=True)
         return
 
-    request_channel = interaction.guild.get_channel(request_channel_id)
-    if not request_channel:
-        await interaction.response.send_message("⚠️ Request channel not found. Please run `/setup` again.", ephemeral=True)
+    # Check if admin is using override
+    is_admin_user = await is_admin(interaction)
+
+    if from_user and not is_admin_user:
+        await interaction.response.send_message("❌ Only admins can transfer from another user.", ephemeral=True)
         return
 
-    await interaction.response.send_message("✅ Transfer request submitted!", ephemeral=True)
+    # Default to initiator if not specified
+    from_user = from_user or interaction.user
+
+    # Format amount and validate
+    try:
+        delta = parse_amount(amount)
+    except ValueError:
+        await interaction.response.send_message("❌ Invalid amount format. Use something like `1g 25s 50c`.", ephemeral=True)
+        return
+
+    # Admins can bypass approval and directly transfer
+    if is_admin_user:
+        from_balance = get_balance(interaction.guild_id, from_user.id)
+        if from_balance < delta:
+            await interaction.response.send_message("❌ Not enough funds to transfer.", ephemeral=True)
+            return
+
+        update_balance(interaction.guild_id, from_user.id, -delta)
+        update_balance(interaction.guild_id, to_user.id, delta)
+
+        log_transaction(interaction.guild_id, "transfer_out", from_user.id, -delta, f"Sent to {to_user.name}: {reason}")
+        log_transaction(interaction.guild_id, "transfer_in", to_user.id, delta, f"Received from {from_user.name}: {reason}")
+
+        await interaction.response.send_message(
+            f"✅ {format_currency(delta, emoji_map)} transferred from {from_user.mention} to {to_user.mention}.\nReason: *{reason}*"
+        )
+        return
+
+    # Regular user transfer — require approval
     embed = discord.Embed(
-        title="🔁 Currency Transfer Request",
-        description=f"**From:** {interaction.user.mention}\n**To:** {to.mention}\n**Amount:** {format_currency(parse_amount(amount))}\n**Reason:** {reason}",
-        color=discord.Color.blue()
+        title="💸 Currency Transfer Request",
+        description=(
+            f"**From:** {from_user.mention}\n"
+            f"**To:** {to_user.mention}\n"
+            f"**Amount:** {format_currency(delta, emoji_map)}\n"
+            f"**Reason:** {reason}"
+        ),
+        color=discord.Color.blurple()
     )
-    embed.set_footer(text=f"From ID: {interaction.user.id} | To ID: {to.id}")
+    embed.set_footer(text=f"User ID: {from_user.id}")
 
-    msg = await request_channel.send(embed=embed)
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
+    view = RequestApprovalView(
+        requester=from_user,
+        target=to_user,
+        delta=delta,
+        reason=reason,
+        tx_type="transfer",
+        guild_id=interaction.guild_id
+    )
+
+    try:
+        channel = await bot.fetch_channel(request_channel)
+        await channel.send(embed=embed, view=view)
+        await interaction.response.send_message("✅ Transfer request submitted for approval.", ephemeral=True)
+    except Exception as e:
+        print("Error posting transfer request:", e)
+        await interaction.response.send_message("❌ Failed to post request to the request channel.", ephemeral=True)
 
 
 
-@bot.tree.command(name="request", description="Request currency (requires approval)")
+@bot.tree.command(name="request", description="Ask for money")
 async def request(interaction: discord.Interaction, amount: str, reason: str):
-    config = load_json(CONFIG_FILE).get(str(interaction.guild_id), {})
-    request_channel_id = config.get("request_channel")
-
-    if not request_channel_id:
-        await interaction.response.send_message("⚠️ Request channel not set. Please run `/setup`.", ephemeral=True)
+    config = get_config(interaction.guild_id)
+    if config is None:
+        await interaction.response.send_message("⚠️ Bot is not configured. Run `/setup` first.")
         return
 
-    request_channel = interaction.guild.get_channel(request_channel_id)
-    if not request_channel:
-        await interaction.response.send_message("⚠️ Request channel not found. Please run `/setup` again.", ephemeral=True)
+    emoji = config.get("emoji", DEFAULT_EMOJIS)
+    try:
+        delta = parse_amount(amount)
+        if delta <= 0:
+            raise ValueError
+    except:
+        await interaction.response.send_message("⚠️ Invalid amount format.")
         return
 
-    await interaction.response.send_message("✅ Request submitted!", ephemeral=True)
     embed = discord.Embed(
         title="💰 Currency Request",
-        description=f"**User:** {interaction.user.mention}\n**Amount:** {format_currency(parse_amount(amount))}\n**Reason:** {reason}",
-        color=discord.Color.orange()
+        description=(
+            f"**User:** {interaction.user.mention}\n"
+            f"**Amount:** {format_currency(delta, emoji)}\n"
+            f"**Reason:** {reason}"
+        ),
+        color=discord.Color.gold()
     )
-    embed.set_footer(text=f"User ID: {interaction.user.id}")
+    embed.set_footer(text="React below to approve or deny.")
 
-    msg = await request_channel.send(embed=embed)
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
+    request_channel_id = config.get("request_channel")
+    if not request_channel_id:
+        await interaction.response.send_message("⚠️ Request channel not set.")
+        return
+
+    request_channel = bot.get_channel(int(request_channel_id))
+    if request_channel is None:
+        await interaction.response.send_message("⚠️ Could not find request channel.")
+        return
+
+    message = await request_channel.send(embed=embed)
+    await message.add_reaction("✅")
+    await message.add_reaction("❌")
+
+    request_entry = {
+        "guild_id": interaction.guild_id,
+        "message_id": message.id,
+        "user_id": interaction.user.id,
+        "amount": delta,
+        "reason": reason
+    }
+
+    requests = load_json(REQUESTS_FILE)
+    requests.append(request_entry)
+    save_json(REQUESTS_FILE, requests)
+
+    await interaction.response.send_message("✅ Request submitted!")
+
 
 
 async def on_ready():
