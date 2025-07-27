@@ -8,6 +8,7 @@ from discord import app_commands, Interaction
 import asyncio
 import json
 import os
+from datetime import datetime
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -136,19 +137,30 @@ async def setup(interaction: Interaction, channel: discord.TextChannel, role: di
     save_json(CONFIG_FILE, config)
     await interaction.response.send_message(f"✅ Setup complete!\nRequests will go to {channel.mention}.\nAdmin role: `{role.name}`\nEmojis: 🪙 {gold} • {silver} • {copper}")
 
-@bot.tree.command(name="backup", description="Admin only: download full server backup.")
+@bot.tree.command(name="backup", description="Admin only: download full backup (config, balances, history).")
 @app_commands.checks.has_permissions(administrator=True)
 async def backup_command(interaction: discord.Interaction):
     try:
+        now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"full_backup_{now}.json"
+
         backup_data = {
             "config": load_json(CONFIG_FILE),
             "balances": load_json(BALANCES_FILE),
-            "history": load_json(HISTORY_FILE),
+            "history": load_json(HISTORY_FILE)
         }
-        backup_file = File(io.BytesIO(json.dumps(backup_data, indent=2).encode()), filename="full_backup.json")
-        await interaction.response.send_message("💾 Full backup created:", files=[backup_file], ephemeral=True)
+
+        with open(filename, "w") as f:
+            json.dump(backup_data, f, indent=2)
+
+        await interaction.response.send_message(
+            "📦 Backup file ready.",
+            files=[File(filename)],
+            ephemeral=True
+        )
     except Exception as e:
         await interaction.response.send_message(f"❌ Failed to create backup: {e}", ephemeral=True)
+
 
 @bot.tree.command(name="restore", description="Restore full backup (Admins only).")
 @app_commands.checks.has_permissions(administrator=True)
