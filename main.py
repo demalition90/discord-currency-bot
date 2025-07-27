@@ -144,35 +144,39 @@ async def take(interaction: Interaction, user: discord.User, amount: int, reason
     save_json(HISTORY_FILE, log)
 
     await interaction.response.send_message(f"✅ Deducted {format_currency(amount, interaction.guild.id)} from {user.mention}. New balance: {format_currency(balances[uid], interaction.guild.id)}")
-@bot.tree.command(name="balance", description="Check your balance or another user's (admin only)")
-@app_commands.describe(user="(Admin only) User to check balance for")
-async def balance_command(interaction: discord.Interaction, user: discord.User = None):
-    balances = load_json(BALANCES_FILE)
+
+@bot.tree.command(name="balance", description="Check your balance or another user's (admin only).")
+@app_commands.describe(user="(Optional) Another user to check the balance of")
+async def balance_command(interaction: Interaction, user: discord.User = None):
     config = load_json(CONFIG_FILE)
-    guild_id = str(interaction.guild_id)
-    emoji_format = config.get(guild_id, {}).get("emojis", {})
-    gold = emoji_format.get("gold", "g")
-    silver = emoji_format.get("silver", "s")
-    copper = emoji_format.get("copper", "c")
+    cfg = config.get(str(interaction.guild.id))
+    if cfg is None:
+        await interaction.response.send_message("❌ No config found. Please run `/setup`.", ephemeral=True)
+        return
 
-    # Who are we checking balance for?
     target = user or interaction.user
-    uid = str(target.id)
+    is_self = (target.id == interaction.user.id)
 
-    # If checking someone else, verify admin
-    if user and interaction.user.id != user.id:
-        admin_roles = config.get(guild_id, {}).get("admin_roles", [])
-        member = interaction.guild.get_member(interaction.user.id)
-        if not member or not any(role.id in admin_roles for role in member.roles):
-            await interaction.response.send_message("❌ You don't have permission to view others' balances.", ephemeral=True)
+    if not is_self:
+        # Only admins can view others' balances
+        admin_roles = cfg.get("admin_roles", [])
+        user_roles = [role.id for role in interaction.user.roles]
+        if not any(rid in user_roles for rid in admin_roles):
+            await interaction.response.send_message("❌ You are not authorized to view other users' balances.", ephemeral=True)
             return
 
-    value = balances.get(uid, 0)
-    g = value // 10000
-    s = (value % 10000) // 100
-    c = value % 100
-    msg = f"{target.mention if user else 'Your'} balance: {g} {gold} {s:02} {silver} {c:02} {copper}"
-    await interaction.response.send_message(msg)
+    data = load_json(DATA_FILE)
+    balance = data.get(str(target.id), 0)
+
+    emotes = cfg.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+    gold = balance // 10000
+    silver = (balance % 10000) // 100
+    copper = balance % 100
+
+    await interaction.response.send_message(
+        f"💰 Balance for {target.mention if not is_self else 'you'}: {gold}{emotes['gold']} {silver:02}{emotes['silver']} {copper:02}{emotes['copper']}"
+    )
+
 
 @bot.tree.command(name="request", description="Request currency from the server.")
 @app_commands.describe(amount="Amount in copper", reason="Reason for request")
