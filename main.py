@@ -1,3 +1,5 @@
+# === Part 1: Imports, Setup, Helpers ===
+
 import discord
 from discord.ext import commands
 from discord import app_commands, Interaction
@@ -14,7 +16,7 @@ BALANCES_FILE = "balances.json"
 REQUESTS_FILE = "requests.json"
 HISTORY_FILE = "transactions.json"
 
-# Helper: Load or save JSON
+# Load or save JSON
 def load_json(path):
     if not os.path.exists(path):
         return {}
@@ -25,7 +27,7 @@ def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
-# Format value into currency string
+# Format value as currency string
 def format_currency(value, guild_id):
     config = load_json(CONFIG_FILE)
     emojis = config.get(str(guild_id), {}).get("emojis", {})
@@ -37,14 +39,15 @@ def format_currency(value, guild_id):
     copper = value % 100
     return f"{gold}{g} {silver:02}{s} {copper:02}{c}"
 
-# Check if user is admin
+# Admin role check
 def is_admin(interaction: Interaction):
     config = load_json(CONFIG_FILE)
     guild_cfg = config.get(str(interaction.guild.id), {})
     allowed_roles = guild_cfg.get("admin_roles", [])
     return any(role.id in allowed_roles for role in interaction.user.roles)
 
-# On bot startup
+# === Bot Startup Events ===
+
 @bot.event
 async def on_ready():
     print(f'✅ Logged in as {bot.user.name}')
@@ -54,7 +57,16 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Sync failed: {e}")
 
-# On bot added to server
+    # Send online message in all configured request channels
+    config = load_json(CONFIG_FILE)
+    for guild_id, cfg in config.items():
+        channel_id = cfg.get("request_channel")
+        if channel_id:
+            guild = bot.get_guild(int(guild_id))
+            channel = guild.get_channel(channel_id) if guild else None
+            if channel:
+                await channel.send("🔄 Currency bot is now online and ready!")
+
 @bot.event
 async def on_guild_join(guild):
     if guild.system_channel:
@@ -109,13 +121,13 @@ async def take(interaction: Interaction, user: discord.User, amount: int, reason
     save_json(HISTORY_FILE, log)
 
     await interaction.response.send_message(f"✅ Deducted {format_currency(amount, interaction.guild.id)} from {user.mention}. New balance: {format_currency(balances[uid], interaction.guild.id)}")
-
 @bot.tree.command(name="balance", description="Check your currency balance.")
 async def balance(interaction: Interaction):
     balances = load_json(BALANCES_FILE)
     uid = str(interaction.user.id)
     current = balances.get(uid, 0)
     await interaction.response.send_message(f"💰 Your balance: {format_currency(current, interaction.guild.id)}", ephemeral=False)
+
 @bot.tree.command(name="request", description="Request currency from the server.")
 @app_commands.describe(amount="Amount in copper", reason="Reason for request")
 async def request(interaction: Interaction, amount: int, reason: str):
@@ -146,6 +158,38 @@ async def request(interaction: Interaction, amount: int, reason: str):
 
     await interaction.response.send_message("📝 Your request has been submitted for approval.", ephemeral=False)
 
+@bot.tree.command(name="transfer", description="Request to transfer currency to another user.")
+@app_commands.describe(to="Recipient", amount="Amount in copper", reason="Why are you sending this?")
+async def transfer(interaction: Interaction, to: discord.User, amount: int, reason: str):
+    if amount <= 0:
+        await interaction.response.send_message("Amount must be greater than zero.", ephemeral=True)
+        return
+
+    requests = load_json(REQUESTS_FILE)
+    request_id = str(interaction.id)
+    requests[request_id] = {
+        "type": "transfer",
+        "from": str(interaction.user.id),
+        "to": str(to.id),
+        "amount": amount,
+        "reason": reason,
+    }
+    save_json(REQUESTS_FILE, requests)
+
+    config = load_json(CONFIG_FILE)
+    channel_id = config.get(str(interaction.guild.id), {}).get("request_channel")
+    channel = interaction.guild.get_channel(channel_id)
+    if not channel:
+        await interaction.response.send_message("❌ Setup not complete or invalid request channel.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="Transfer Request", description=f"{interaction.user.mention} ➡️ {to.mention}\n{format_currency(amount, interaction.guild.id)}\nReason: {reason}", color=0x3498DB)
+    embed.set_footer(text=f"Transfer | From: {interaction.user.id} | To: {to.id} | Amount: {amount}")
+    msg = await channel.send(embed=embed)
+    await msg.add_reaction("✅")
+    await msg.add_reaction("❌")
+
+    await interaction.response.send_message("✅ Transfer request submitted for approval.", ephemeral=False)
 @bot.tree.command(name="rescan_requests", description="Repost any unapproved requests.")
 async def rescan_requests(interaction: Interaction):
     config = load_json(CONFIG_FILE)
@@ -228,6 +272,16 @@ async def help_command(interaction: Interaction):
 - `/give` and `/take` — (Admin) Grant or remove currency
 - `/rescan_requests` — (Admin) Repost missed requests
 - `/settings` — View config info""", ephemeral=False)
+@bot.tree.command(name="refresh", description="Admin: Force re-sync of slash commands.")
+async def refresh(interaction: Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ You are not authorized.", ephemeral=False)
+        return
+    try:
+        synced = await bot.tree.sync()
+        await interaction.response.send_message(f"🔁 Synced {len(synced)} commands.", ephemeral=False)
+    except Exception as e:
+        await interaction.response.send_message(f"⚠️ Sync failed: {e}", ephemeral=False)
 
 @bot.event
 async def on_raw_reaction_add(payload):
@@ -299,9 +353,5 @@ async def on_raw_reaction_add(payload):
     save_json(REQUESTS_FILE, reqs)
     save_json(BALANCES_FILE, balances)
     save_json(HISTORY_FILE, history)
-if __name__ == "__main__":
-    TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-    if not TOKEN:
-        print("❌ DISCORD_BOT_TOKEN environment variable not found.")
-    else:
-        bot.run(TOKEN)
+
+bot.run(os.getenv("DISCORD_TOKEN"))
