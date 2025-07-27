@@ -148,28 +148,25 @@ async def setup(interaction: Interaction, channel: discord.TextChannel, role: di
 
 
 
-@bot.tree.command(name="backup", description="Admin only: Download all server data as a zip.")
+@bot.tree.command(name="backup", description="Admin only: download all config and data files.")
 @app_commands.checks.has_permissions(administrator=True)
 async def backup_command(interaction: discord.Interaction):
     try:
-        # Create an in-memory ZIP file
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            for filename in [BALANCES_FILE, HISTORY_FILE, CONFIG_FILE, NAME_CACHE_FILE]:
-                try:
-                    with open(filename, "r", encoding="utf-8") as f:
-                        zip_file.writestr(filename, f.read())
-                except FileNotFoundError:
-                    zip_file.writestr(filename, "{}")  # fallback: empty object
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        zip_filename = f"currency_backup_{timestamp}.zip"
 
-        zip_buffer.seek(0)
-        now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        discord_file = discord.File(zip_buffer, filename=f"currency_backup_{now}.zip")
+        with zipfile.ZipFile(zip_filename, 'w') as zipf:
+            for file in [CONFIG_FILE, BALANCES_FILE, REQUESTS_FILE, HISTORY_FILE]:
+                if os.path.exists(file):
+                    zipf.write(file)
 
-        await interaction.response.send_message("📦 Backup created!", file=discord_file, ephemeral=True)
+        backup_file = File(zip_filename)
+        await interaction.response.send_message("📦 Backup file:", file=backup_file, ephemeral=True)
 
+        os.remove(zip_filename)
     except Exception as e:
         await interaction.response.send_message(f"❌ Failed to create backup: {e}", ephemeral=True)
+
 
 
 
@@ -274,53 +271,33 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
 
 NAME_CACHE_FILE = "name_cache.json"
 
-@bot.tree.command(name="balances", description="Admin only: List all user balances.")
+@bot.tree.command(name="balances", description="Admin only: view all user balances.")
 @app_commands.checks.has_permissions(administrator=True)
 async def balances_command(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True, ephemeral=True)
-
     try:
-        data = load_json(BALANCES_FILE)
-        cfg = config.get(str(interaction.guild.id), {})
-        emotes = cfg.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+        balances = load_json(BALANCES_FILE)
+        config = load_json(CONFIG_FILE)
+        emojis = config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+        name_cache = {}
 
-        name_cache = load_json(NAME_CACHE_FILE)
-        updated = False
-
-        lines = []
-
-        for uid, amount in data.items():
-            if uid in name_cache:
-                name = name_cache[uid]
-            else:
-                try:
-                    member = await interaction.guild.fetch_member(int(uid))
-                    name = member.display_name
-                except discord.NotFound:
-                    name = f"User {uid}"
-                except Exception as e:
-                    name = f"Unknown ({uid})"
-                name_cache[uid] = name
-                updated = True
-
-            g = amount // 10000
-            s = (amount % 10000) // 100
-            c = amount % 100
-
-            lines.append(f"{name}: {g}{emotes['gold']} {s:02}{emotes['silver']} {c:02}{emotes['copper']}")
-
-        if updated:
-            save_json(NAME_CACHE_FILE, name_cache)
-
-        if not lines:
-            await interaction.followup.send("📊 No balances found.", ephemeral=True)
+        if not balances:
+            await interaction.response.send_message("📊 No balances found.", ephemeral=True)
             return
 
-        msg = "**📊 All User Balances:**\n" + "\n".join(lines)
-        await interaction.followup.send(msg, ephemeral=True)
+        msg = "**📊 All User Balances:**\n"
+        for user_id, balance in balances.items():
+            if user_id not in name_cache:
+                try:
+                    user = await interaction.client.fetch_user(int(user_id))
+                    name_cache[user_id] = user.name
+                except Exception:
+                    name_cache[user_id] = f"User {user_id}"
+            name = name_cache[user_id]
+            msg += f"{name}: {format_currency(balance, emojis)}\n"
 
+        await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to load balances: {e}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Failed to load balances: {e}", ephemeral=True)
 
 
 
@@ -354,90 +331,75 @@ async def request(interaction: Interaction, amount: int, reason: str):
 
     await interaction.response.send_message("📝 Your request has been submitted for approval.", ephemeral=False)
 
-@bot.tree.command(name="transfer", description="Request to transfer currency to another user.")
-@app_commands.describe(to="Recipient", amount="Amount in copper", reason="Why are you sending this?")
-async def transfer(interaction: Interaction, to: discord.User, amount: int, reason: str):
-    if amount <= 0:
-        await interaction.response.send_message("Amount must be greater than zero.", ephemeral=True)
-        return
-
-    requests = load_json(REQUESTS_FILE)
-    request_id = str(interaction.id)
-    requests[request_id] = {
-        "type": "transfer",
-        "from": str(interaction.user.id),
-        "to": str(to.id),
-        "amount": amount,
-        "reason": reason,
-    }
-    save_json(REQUESTS_FILE, requests)
-
+@bot.tree.command(name="transfer", description="Request a currency transfer from one user to another.")
+@app_commands.describe(
+    from_user="User sending the currency",
+    to_user="User receiving the currency",
+    amount="Amount in copper",
+    reason="Reason for transfer"
+)
+async def transfer_command(
+    interaction: discord.Interaction,
+    from_user: discord.User,
+    to_user: discord.User,
+    amount: int,
+    reason: str
+):
     config = load_json(CONFIG_FILE)
-    channel_id = config.get(str(interaction.guild.id), {}).get("request_channel")
-    channel = interaction.guild.get_channel(channel_id)
-    if not channel:
-        await interaction.response.send_message("❌ Setup not complete or invalid request channel.", ephemeral=True)
+    request_channel_id = config.get("request_channel")
+    admin_roles = config.get("admin_roles", [])
+
+    if not is_admin(interaction) and from_user.id != interaction.user.id:
+        await interaction.response.send_message("❌ You can only request transfers from your own account.", ephemeral=True)
         return
 
-    embed = discord.Embed(title="Transfer Request", description=f"{interaction.user.mention} ➡️ {to.mention}\n{format_currency(amount, interaction.guild.id)}\nReason: {reason}", color=0x3498DB)
-    embed.set_footer(text=f"Transfer | From: {interaction.user.id} | To: {to.id} | Amount: {amount}")
-    msg = await channel.send(embed=embed)
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
+    if not request_channel_id:
+        await interaction.response.send_message("❌ No request channel configured. Admin must run `/setup`.", ephemeral=True)
+        return
 
-    await interaction.response.send_message("✅ Transfer request submitted for approval.", ephemeral=False)
-@bot.tree.command(name="rescan_requests", description="Repost any unapproved requests.")
-async def rescan_requests(interaction: Interaction):
+    channel = interaction.guild.get_channel(int(request_channel_id)) or await interaction.guild.fetch_channel(int(request_channel_id))
+    emojis = config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+    amount_str = format_currency(amount, emojis)
+
+    embed = discord.Embed(title="Currency Transfer Request", color=discord.Color.orange())
+    embed.add_field(name="From", value=from_user.mention, inline=True)
+    embed.add_field(name="To", value=to_user.mention, inline=True)
+    embed.add_field(name="Amount", value=amount_str, inline=False)
+    embed.add_field(name="Reason", value=reason, inline=False)
+    embed.set_footer(text=f"Request | From: {from_user.id} | To: {to_user.id} | Amount: {amount}")
+
+    message = await channel.send(embed=embed)
+    await message.add_reaction("✅")
+    await message.add_reaction("❌")
+
+    await interaction.response.send_message("📨 Transfer request submitted for approval.", ephemeral=True)
+
+
+@bot.tree.command(name="transactions", description="View your recent transactions.")
+@app_commands.describe(user="User to view (admin only)")
+async def transactions_command(interaction: discord.Interaction, user: discord.User = None):
+    if user and not is_admin(interaction):
+        await interaction.response.send_message("❌ You don't have permission to view other users' transactions.", ephemeral=True)
+        return
+
+    user_id = str(user.id if user else interaction.user.id)
+    history = load_json(HISTORY_FILE)
     config = load_json(CONFIG_FILE)
-    if not is_admin(interaction):
-        await interaction.response.send_message("❌ You are not authorized.", ephemeral=False)
+    emojis = config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+
+    user_history = history.get(user_id, [])
+    if not user_history:
+        await interaction.response.send_message("📜 No transaction history found.", ephemeral=True)
         return
 
-    reqs = load_json(REQUESTS_FILE)
-    posted = 0
-    channel_id = config.get(str(interaction.guild.id), {}).get("request_channel")
-    channel = interaction.guild.get_channel(channel_id)
+    msg = "**📜 Your last 10 transactions:**\n"
+    for entry in reversed(user_history[-10:]):
+        sign = "+" if entry["type"] == "grant" else "-"
+        amount_str = format_currency(entry["amount"], emojis)
+        msg += f"{sign}{amount_str} — {entry['type'].capitalize()} ({entry['reason']})\n"
 
-    for req_id, data in reqs.items():
-        if data["type"] == "request":
-            user_id = data["user_id"]
-            amount = data["amount"]
-            reason = data.get("reason", "N/A")
-            embed = discord.Embed(title="Currency Request", description=f"<@{user_id}> is requesting {format_currency(amount, interaction.guild.id)}\nReason: {reason}", color=0xF1C40F)
-            embed.set_footer(text=f"Request | User: {user_id} | Amount: {amount}")
-            msg = await channel.send(embed=embed)
-            await msg.add_reaction("✅")
-            await msg.add_reaction("❌")
-            posted += 1
-        elif data["type"] == "transfer":
-            from_id = data["from"]
-            to_id = data["to"]
-            amount = data["amount"]
-            reason = data.get("reason", "N/A")
-            embed = discord.Embed(title="Transfer Request", description=f"<@{from_id}> ➡️ <@{to_id}>\n{format_currency(amount, interaction.guild.id)}\nReason: {reason}", color=0x3498DB)
-            embed.set_footer(text=f"Transfer | From: {from_id} | To: {to_id} | Amount: {amount}")
-            msg = await channel.send(embed=embed)
-            await msg.add_reaction("✅")
-            await msg.add_reaction("❌")
-            posted += 1
+    await interaction.response.send_message(msg, ephemeral=True)
 
-    await interaction.response.send_message(f"🔁 Resent {posted} pending requests.", ephemeral=False)
-
-@bot.tree.command(name="transactions", description="View your grant/withdraw history.")
-async def transactions(interaction: Interaction):
-    log = load_json(HISTORY_FILE)
-    uid = str(interaction.user.id)
-    history = log.get(uid, [])
-    if not history:
-        await interaction.response.send_message("📭 No transaction history found.", ephemeral=False)
-        return
-
-    lines = []
-    for entry in history[-10:]:
-        sign = "+" if entry["amount"] > 0 else ""
-        lines.append(f"{sign}{format_currency(entry['amount'], interaction.guild.id)} — {entry['type'].capitalize()} ({entry['reason']})")
-
-    await interaction.response.send_message("📜 Your last 10 transactions:\n" + "\n".join(lines), ephemeral=False)
 
 @bot.tree.command(name="settings", description="Show the current bot config for this server.")
 async def settings(interaction: Interaction):
