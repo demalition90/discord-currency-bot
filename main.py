@@ -319,31 +319,31 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
     # Ensure this command runs only in the designated request channel
     if not await enforce_request_channel(interaction):
         return
+    # Always defer first so that any follow‑up messages are permitted
+    await interaction.response.defer(ephemeral=False, thinking=True)
     try:
         # Load config and validate
         config = load_json(CONFIG_FILE)
         cfg = config.get(str(interaction.guild.id))
         if cfg is None:
-            await interaction.response.send_message("❌ No config found. Please run `/setup`.", ephemeral=True)
+            await interaction.followup.send("❌ No config found. Please run `/setup`.",
+                                           ephemeral=True)
             return
 
-        # Who are we checking?
+        # Determine the target for the balance query
         target = user or interaction.user
         is_self = (target.id == interaction.user.id)
 
-        # Check admin permissions if viewing another user
+        # If viewing another user, ensure caller has an admin role
         if not is_self:
             admin_roles = cfg.get("admin_roles", [])
             user_roles = [role.id for role in interaction.user.roles]
-            print(f"[DEBUG] Admin roles: {admin_roles}")
-            print(f"[DEBUG] User roles: {user_roles}")
             if not any(rid in admin_roles for rid in user_roles):
-                await interaction.response.send_message("❌ You are not authorized to view other users' balances.", ephemeral=True)
+                await interaction.followup.send("❌ You are not authorized to view other users' balances.",
+                                               ephemeral=True)
                 return
 
-        # Defer before loading balances so we acknowledge promptly
-        await interaction.response.defer(ephemeral=False, thinking=True)
-        # Load balances and format
+        # Load balances and compute the display values
         balances = load_json(BALANCES_FILE)
         uid = str(target.id)
         balance = balances.get(uid, 0)
@@ -355,11 +355,13 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
             f"💰 Balance for {'you' if is_self else target.mention}: "
             f"{gold}{emotes['gold']} {silver:02}{emotes['silver']} {copper:02}{emotes['copper']}"
         )
-        await interaction.followup.send(msg, ephemeral=False)
-
+        await interaction.followup.send(msg,
+                                       ephemeral=False)
     except Exception as e:
         print(f"[ERROR] /balance failed: {e}")
-        await interaction.response.send_message("❌ An internal error occurred while processing your request.", ephemeral=True)
+        # Since we've deferred, send the error via follow‑up
+        await interaction.followup.send("❌ An internal error occurred while processing your request.",
+                                       ephemeral=True)
 
 
 NAME_CACHE_FILE = "name_cache.json"
