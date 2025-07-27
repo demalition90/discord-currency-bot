@@ -95,6 +95,20 @@ async def on_guild_join(guild):
     except Exception as e:
         print(f"⚠️ Failed to send join message in {guild.name}: {e}")
 
+@bot.tree.command(name="setup", description="Configure the bot for this server.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(channel="Channel for request posts", role="Admin role", gold="Gold emoji (optional)", silver="Silver emoji (optional)", copper="Copper emoji (optional)")
+async def setup(interaction: Interaction, channel: discord.TextChannel, role: discord.Role, gold: str = "g", silver: str = "s", copper: str = "c"):
+    config = load_json(CONFIG_FILE)
+    config[str(interaction.guild.id)] = {
+        "request_channel": channel.id,
+        "admin_roles": [role.id],
+        "emojis": {"gold": gold, "silver": silver, "copper": copper}
+    }
+    save_json(CONFIG_FILE, config)
+    await interaction.response.send_message(f"✅ Setup complete!\nRequests will go to {channel.mention}.\nAdmin role: `{role.name}`\nEmojis: 🪙 {gold} • {silver} • {copper}")
+
+
 @bot.tree.command(name="give", description="Admin: Grant currency to a user.")
 @app_commands.describe(user="Recipient", amount="Amount in copper", reason="Reason for grant")
 async def give(interaction: Interaction, user: discord.User, amount: int, reason: str):
