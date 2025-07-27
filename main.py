@@ -219,7 +219,8 @@ async def give(interaction: discord.Interaction, user: discord.Member, amount: i
 
         # Safe follow-up
         await interaction.followup.send(
-            f"✅ Granted {format_currency(amount)} to {user.mention}. New balance: {format_currency(new_balance)}",
+            f"✅ Granted {format_currency(amount, interaction.guild.id)} to {user.mention}. "
+            f"New balance: {format_currency(new_balance, interaction.guild.id)}",
             ephemeral=False
         )
 
