@@ -1,167 +1,182 @@
+
 import discord
-from discord.ext import commands, tasks
-from discord import app_commands, Interaction
+from discord.ext import commands
+from discord import app_commands
 import asyncio
 import json
 import os
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents.guilds = True
+intents.members = True
 
-# File to store balances and requests
+bot = commands.Bot(command_prefix="!", intents=intents)
+
 BALANCES_FILE = "balances.json"
 REQUESTS_FILE = "requests.json"
+ADMIN_ROLE_NAME = "banker"
 
-# Emojis
-GOLD = ":g_:"
-SILVER = ":s_:"
-COPPER = ":c_:"
-
-def load_balances():
-    if not os.path.exists(BALANCES_FILE):
+def load_json(file):
+    if not os.path.exists(file):
         return {}
-    with open(BALANCES_FILE, "r") as f:
+    with open(file, "r") as f:
         return json.load(f)
 
-def save_balances(balances):
-    with open(BALANCES_FILE, "w") as f:
-        json.dump(balances, f)
+def save_json(file, data):
+    with open(file, "w") as f:
+        json.dump(data, f)
 
-def load_requests():
-    if not os.path.exists(REQUESTS_FILE):
-        return {}
-    with open(REQUESTS_FILE, "r") as f:
-        return json.load(f)
-
-def save_requests(requests):
-    with open(REQUESTS_FILE, "w") as f:
-        json.dump(requests, f)
-
-def format_currency(value):
+def format_currency(value, guild=None):
     gold = value // 10000
     silver = (value % 10000) // 100
     copper = value % 100
-    return f"{gold}{GOLD}{silver:02}{SILVER}{copper:02}{COPPER}"
+
+    if guild:
+        g = discord.utils.get(guild.emojis, name="g_")
+        s = discord.utils.get(guild.emojis, name="s_")
+        c = discord.utils.get(guild.emojis, name="c_")
+        return f"{gold}{g or ':g_:'}{silver:02}{s or ':s_:'}{copper:02}{c or ':c_:'}"
+    return f"{gold}:g_:{silver:02}:s_:{copper:02}:c_:"
+
+def is_admin(interaction: discord.Interaction):
+    return any(role.name == ADMIN_ROLE_NAME for role in interaction.user.roles)
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
+    print(f"Logged in as {bot.user.name}")
     try:
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands")
+        print(f"Synced {len(synced)} commands.")
     except Exception as e:
         print(e)
 
-@bot.tree.command(name="balance", description="Check your balance.")
-async def balance(interaction: Interaction):
-    balances = load_balances()
+@bot.tree.command(name="balance")
+async def balance(interaction: discord.Interaction):
+    balances = load_json(BALANCES_FILE)
     user_id = str(interaction.user.id)
-    value = balances.get(user_id, 0)
-    await interaction.response.send_message(f"{interaction.user.name} has {format_currency(value)}", ephemeral=False)
+    amount = balances.get(user_id, 0)
+    await interaction.response.send_message(f"{interaction.user.mention} has {format_currency(amount, interaction.guild)}")
 
-@bot.tree.command(name="give", description="Give currency to another user.")
-@app_commands.describe(user="The user to give currency to", amount="Amount of copper to give")
-async def give(interaction: Interaction, user: discord.User, amount: int):
-    if amount <= 0:
-        await interaction.response.send_message("Amount must be greater than zero.", ephemeral=True)
+@bot.tree.command(name="give")
+@app_commands.describe(user="User to give currency to", amount="Amount (in copper)", reason="Reason for the grant")
+async def give(interaction: discord.Interaction, user: discord.User, amount: int, reason: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message("You don’t have permission to use this command.", ephemeral=True)
         return
 
-    balances = load_balances()
-    sender_id = str(interaction.user.id)
-    receiver_id = str(user.id)
+    balances = load_json(BALANCES_FILE)
+    uid = str(user.id)
+    balances[uid] = balances.get(uid, 0) + amount
+    save_json(BALANCES_FILE, balances)
 
-    if balances.get(sender_id, 0) < amount:
-        await interaction.response.send_message("You don't have enough funds.", ephemeral=True)
+    await interaction.response.send_message(f"Granted {format_currency(amount, interaction.guild)} to {user.mention}.
+Reason: {reason}")
+
+@bot.tree.command(name="take")
+@app_commands.describe(user="User to take currency from", amount="Amount (in copper)", reason="Reason for deduction")
+async def take(interaction: discord.Interaction, user: discord.User, amount: int, reason: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message("You don’t have permission to use this command.", ephemeral=True)
         return
 
-    balances[sender_id] -= amount
-    balances[receiver_id] = balances.get(receiver_id, 0) + amount
-    save_balances(balances)
+    balances = load_json(BALANCES_FILE)
+    uid = str(user.id)
+    balances[uid] = max(0, balances.get(uid, 0) - amount)
+    save_json(BALANCES_FILE, balances)
 
-    await interaction.response.send_message(f"Transferred {format_currency(amount)} to {user.name}.")
+    await interaction.response.send_message(f"Deducted {format_currency(amount, interaction.guild)} from {user.mention}.
+Reason: {reason}")
 
-@bot.tree.command(name="request", description="Request currency from the server.")
-@app_commands.describe(amount="Amount in copper", reason="Reason for the request")
-async def request(interaction: Interaction, amount: int, reason: str):
-    requests = load_requests()
-    request_id = str(interaction.id)
-    user_id = str(interaction.user.id)
-    requests[request_id] = {"user_id": user_id, "amount": amount, "reason": reason}
-    save_requests(requests)
+@bot.tree.command(name="transfer")
+@app_commands.describe(to="User to transfer to", amount="Amount (in copper)", reason="Reason for the transfer")
+async def transfer(interaction: discord.Interaction, to: discord.User, amount: int, reason: str):
+    requests = load_json(REQUESTS_FILE)
+    req_id = str(interaction.id)
+    requests[req_id] = {"user_id": str(interaction.user.id), "to_id": str(to.id), "amount": amount, "reason": reason}
+    save_json(REQUESTS_FILE, requests)
 
-    embed = discord.Embed(
-        title="Currency Request",
-        description=f"""{interaction.user.mention} is requesting {format_currency(amount)}
-Reason: {reason}""",
-        color=0xF1C40F
-    )
-    embed.set_footer(text=f"User ID: {user_id} | Request Amount: {amount}")
-    message = await interaction.channel.send(embed=embed)
-    await message.add_reaction("✅")
-    await message.add_reaction("❌")
+    embed = discord.Embed(title="Transfer Request",
+                          description=f"{interaction.user.mention} wants to transfer {format_currency(amount, interaction.guild)} to {to.mention}
+Reason: {reason}",
+                          color=0xF1C40F)
+    embed.set_footer(text=f"Transfer | From: {interaction.user.id} | To: {to.id} | Amount: {amount}")
+    msg = await interaction.channel.send(embed=embed)
+    await msg.add_reaction("✅")
+    await msg.add_reaction("❌")
 
-    await interaction.response.send_message("Your request has been submitted for review.", ephemeral=False)
+    await interaction.response.send_message("Your transfer request has been submitted.", ephemeral=True)
+
+@bot.tree.command(name="rescan_requests")
+async def rescan_requests(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("Only admins can use this.", ephemeral=True)
+        return
+
+    requests = load_json(REQUESTS_FILE)
+    count = 0
+    for rid, req in list(requests.items()):
+        from_id, to_id = req["user_id"], req.get("to_id")
+        amount, reason = req["amount"], req.get("reason", "N/A")
+
+        desc = f"<@{from_id}> requests {format_currency(amount, interaction.guild)}"
+        if to_id:
+            desc = f"<@{from_id}> → <@{to_id}>: {format_currency(amount, interaction.guild)}"
+
+        embed = discord.Embed(title="Pending Request", description=f"{desc}
+Reason: {reason}", color=0xF1C40F)
+        embed.set_footer(text=f"Request ID: {rid} | From: {from_id} | To: {to_id} | Amount: {amount}")
+        msg = await interaction.channel.send(embed=embed)
+        await msg.add_reaction("✅")
+        await msg.add_reaction("❌")
+        count += 1
+
+    await interaction.response.send_message(f"Rescanned {count} pending requests.", ephemeral=True)
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    if payload.user_id == bot.user.id:
+    if payload.user_id == bot.user.id or str(payload.emoji) not in ["✅", "❌"]:
         return
 
-    if str(payload.emoji) not in ("✅", "❌"):
+    guild = bot.get_guild(payload.guild_id)
+    member = guild.get_member(payload.user_id)
+    if not member or all(role.name != ADMIN_ROLE_NAME for role in member.roles):
         return
 
     channel = bot.get_channel(payload.channel_id)
     message = await channel.fetch_message(payload.message_id)
+    if not message.embeds:
+        return
 
-    if message.embeds:
-        embed = message.embeds[0]
-        footer = embed.footer.text
-        if footer and "User ID" in footer and "Request Amount" in footer:
-            user_id = footer.split("User ID: ")[1].split(" |")[0]
-            amount = int(footer.split("Request Amount: ")[1])
-            requests = load_requests()
-            for req_id, req in list(requests.items()):
-                if req["user_id"] == user_id and req["amount"] == amount:
-                    if str(payload.emoji) == "✅":
-                        balances = load_balances()
-                        balances[user_id] = balances.get(user_id, 0) + amount
-                        save_balances(balances)
-                        await channel.send(f"Request approved. {format_currency(amount)} granted to <@{user_id}>.")
-                    else:
-                        await channel.send(f"Request denied for <@{user_id}>.")
-                    del requests[req_id]
-                    save_requests(requests)
-                    break
+    embed = message.embeds[0]
+    footer = embed.footer.text or ""
+    try:
+        parts = {k.strip(): v.strip() for k, v in (kv.split(":") for kv in footer.split("|"))}
+        from_id = parts.get("From")
+        to_id = parts.get("To")
+        amount = int(parts.get("Amount"))
+        requests = load_json(REQUESTS_FILE)
 
-@bot.tree.command(name="transactions", description="View your transaction history.")
-async def transactions(interaction: Interaction):
-    await interaction.response.send_message("No transactions found.", ephemeral=False)
+        if str(payload.emoji) == "✅":
+            balances = load_json(BALANCES_FILE)
+            if to_id:
+                balances[to_id] = balances.get(to_id, 0) + amount
+                balances[from_id] = max(0, balances.get(from_id, 0) - amount)
+                await channel.send(f"✅ Transfer approved: {format_currency(amount, guild)} from <@{from_id}> to <@{to_id}>.")
+            else:
+                balances[from_id] = balances.get(from_id, 0) + amount
+                await channel.send(f"✅ Request approved: {format_currency(amount, guild)} granted to <@{from_id}>.")
 
-@bot.tree.command(name="rescan_requests", description="Rescan and process missed requests.")
-async def rescan_requests(interaction: Interaction):
-    requests = load_requests()
-    processed = 0
-    for req_id, req in list(requests.items()):
-        user_id = req["user_id"]
-        amount = req["amount"]
-        channel = interaction.channel
-        embed = discord.Embed(
-            title="Currency Request",
-            description=f"""<@{user_id}> is requesting {format_currency(amount)}
-Reason: {req.get('reason', 'N/A')}""",
-            color=0xF1C40F
-        )
-        embed.set_footer(text=f"User ID: {user_id} | Request Amount: {amount}")
-        message = await channel.send(embed=embed)
-        await message.add_reaction("✅")
-        await message.add_reaction("❌")
-        processed += 1
+            save_json(BALANCES_FILE, balances)
+        else:
+            await channel.send(f"❌ Request denied.")
 
-    await interaction.response.send_message(f"Rescan complete. {processed} requests processed.", ephemeral=False)
+        del requests[next(k for k, v in requests.items() if v['user_id'] == from_id and v['amount'] == amount)]
+        save_json(REQUESTS_FILE, requests)
 
-# Run the bot
+    except Exception as e:
+        print("Reaction handler error:", e)
+
 if __name__ == "__main__":
-    import asyncio
     TOKEN = os.getenv("DISCORD_BOT_TOKEN")
     asyncio.run(bot.start(TOKEN))
