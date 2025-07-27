@@ -199,26 +199,36 @@ async def restore(interaction: Interaction, file: discord.Attachment):
 @app_commands.check(lambda i: is_admin(i))
 @app_commands.describe(user="User to give currency to", amount="Total amount in copper (e.g. 12345 = 1g 23s 45c)", reason="Reason for giving currency")
 async def give(interaction: discord.Interaction, user: discord.Member, amount: int, reason: str):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=False, thinking=True)
 
-    user_id = str(user.id)
-    balances = load_json("balances.json")
-    transactions = load_json("transactions.json")
+        user_id = str(user.id)
+        balances = load_json("balances.json")
+        transactions = load_json("transactions.json")
 
-    current = balances.get(user_id, 0)
-    new_balance = current + amount
-    balances[user_id] = new_balance
+        # Update balance
+        current = balances.get(user_id, 0)
+        new_balance = current + amount
+        balances[user_id] = new_balance
+        save_json("balances.json", balances)
 
-    save_json("balances.json", balances)
+        # Update transactions
+        transactions.setdefault(user_id, []).insert(0, f"+{amount} — Grant ({reason})")
+        transactions[user_id] = transactions[user_id][:10]
+        save_json("transactions.json", transactions)
 
-    transactions.setdefault(user_id, []).insert(0, f"+{amount} — Grant ({reason})")
-    transactions[user_id] = transactions[user_id][:10]
-    save_json("transactions.json", transactions)
+        # Safe follow-up
+        await interaction.followup.send(
+            f"✅ Granted {format_currency(amount)} to {user.mention}. New balance: {format_currency(new_balance)}",
+            ephemeral=False
+        )
 
-    await interaction.followup.send(
-        f"✅ Granted {format_currency(amount)} to {user.mention}. New balance: {format_currency(new_balance)}",
-        ephemeral=False
-    )
+    except Exception as e:
+        # If follow-up fails, send fallback error
+        await interaction.followup.send(
+            f"❌ Error during /give: `{e}`",
+            ephemeral=True
+        )
 
 
 
