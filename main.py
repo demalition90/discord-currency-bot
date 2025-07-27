@@ -100,7 +100,7 @@ async def on_ready():
                 else:
                     await channel.send(
                         "⚠️ Currency bot has restarted and no configuration was found.\n"
-                        "An admin must run `/setup` to reconfigure the bot. or /restore to restore lost data"
+                        "An admin must run `/setup` to reconfigure the bot. or /restore to restore lost data using a backup file"
                     )
         except Exception as e:
             print(f"⚠️ Could not send startup message in {guild.name}: {e}")
@@ -119,7 +119,7 @@ async def on_guild_join(guild):
         if channel:
             await channel.send(
                 "👋 Thanks for adding me! Use `/setup` to configure the currency bot.\n"
-                "If you're an admin, run `/setup` to define which role can approve requests and which channel to use."
+                "If you're an admin, run `/setup` to define which role can approve requests and which channel to use. Alternatively use /restore if you have a backup file"
             )
     except Exception as e:
         print(f"⚠️ Failed to send join message in {guild.name}: {e}")
@@ -267,6 +267,28 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
         print(f"[ERROR] /balance failed: {e}")
         await interaction.response.send_message("❌ An internal error occurred while processing your request.", ephemeral=True)
 
+@bot.tree.command(name="balances", description="Admin only: View all user balances in this server.")
+@app_commands.checks.has_permissions(administrator=True)
+async def balances_command(interaction: discord.Interaction):
+    balances = load_json(BALANCES_FILE)
+    guild = interaction.guild
+
+    output_lines = []
+
+    for uid, amount in balances.items():
+        member = guild.get_member(int(uid))
+        name = member.display_name if member else f"User {uid}"
+        output_lines.append(f"{name}: {format_currency(amount, guild.id)}")
+
+    if not output_lines:
+        await interaction.response.send_message("📭 No balances found.", ephemeral=True)
+        return
+
+    # Sort by total copper, highest first
+    output_lines.sort(key=lambda line: int(balances.get(str(guild.get_member_named(line.split(':')[0]).id), 0)), reverse=True)
+
+    response = "📊 **User Balances:**\n" + "\n".join(output_lines)
+    await interaction.response.send_message(response, ephemeral=True)
 
 
 @bot.tree.command(name="request", description="Request currency from the server.")
