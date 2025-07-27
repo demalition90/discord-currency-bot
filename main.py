@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands
 from discord import app_commands, Interaction
@@ -120,9 +119,15 @@ async def transfer(interaction: Interaction, to: discord.User, amount: int, reas
         await interaction.response.send_message("❌ Setup not complete or invalid request channel.", ephemeral=True)
         return
 
-    embed = discord.Embed(title="Transfer Request", description=f"{interaction.user.mention} ➡️ {to.mention}
-{format_currency(amount)}
-Reason: {reason}", color=0x3498DB)
+    embed = discord.Embed(
+        title="Transfer Request",
+        description=(
+            f"{interaction.user.mention} ➡️ {to.mention}\n"
+            f"{format_currency(amount)}\n"
+            f"Reason: {reason}"
+        ),
+        color=0x3498DB
+    )
     embed.set_footer(text=f"Transfer | From: {interaction.user.id} | To: {to.id} | Amount: {amount}")
     msg = await channel.send(embed=embed)
     await msg.add_reaction("✅")
