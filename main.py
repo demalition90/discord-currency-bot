@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands, Interaction
@@ -91,8 +90,12 @@ async def request(interaction: Interaction, amount: int, reason: str):
     requests[request_id] = {"user_id": user_id, "amount": amount, "reason": reason}
     save_requests(requests)
 
-    embed = discord.Embed(title="Currency Request", description=f"{interaction.user.mention} is requesting {format_currency(amount)}"
-Reason: {reason}", color=0xF1C40F)
+    embed = discord.Embed(
+        title="Currency Request",
+        description=f"""{interaction.user.mention} is requesting {format_currency(amount)}
+Reason: {reason}""",
+        color=0xF1C40F
+    )
     embed.set_footer(text=f"User ID: {user_id} | Request Amount: {amount}")
     message = await interaction.channel.send(embed=embed)
     await message.add_reaction("✅")
@@ -143,8 +146,12 @@ async def rescan_requests(interaction: Interaction):
         user_id = req["user_id"]
         amount = req["amount"]
         channel = interaction.channel
-        embed = discord.Embed(title="Currency Request", description=f"<@{user_id}> is requesting {format_currency(amount)}
-Reason: {req.get('reason', 'N/A')}", color=0xF1C40F)
+        embed = discord.Embed(
+            title="Currency Request",
+            description=f"""<@{user_id}> is requesting {format_currency(amount)}
+Reason: {req.get('reason', 'N/A')}""",
+            color=0xF1C40F
+        )
         embed.set_footer(text=f"User ID: {user_id} | Request Amount: {amount}")
         message = await channel.send(embed=embed)
         await message.add_reaction("✅")
