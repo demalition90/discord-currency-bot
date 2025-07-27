@@ -383,32 +383,7 @@ async def on_reaction_add(reaction, user):
     save_json(REQUESTS_FILE, requests)
     save_json(BALANCES_FILE, balances)
 
-@bot.tree.command(name="backup", description="Admin-only: Download all data")
-@commands.check(is_admin)
-async def backup_command(interaction: Interaction):
-    zip_path = "/tmp/backup.zip"
-    with zipfile.ZipFile(zip_path, "w") as z:
-        for f in [BALANCES_FILE, REQUESTS_FILE, HISTORY_FILE, CONFIG_FILE, NAME_CACHE_FILE]:
-            z.write(f)
-    await interaction.response.send_message("📦 Backup created:", file=discord.File(zip_path))
 
-@bot.tree.command(name="restore", description="Admin-only: Upload backup ZIP")
-@commands.check(is_admin)
-async def restore(interaction: Interaction):
-    await interaction.response.send_message("🔁 Send the backup zip file now.")
-
-    def check(m):
-        return m.author == interaction.user and m.attachments
-
-    try:
-        msg = await bot.wait_for("message", timeout=30.0, check=check)
-        z = zipfile.ZipFile(await msg.attachments[0].read())
-        for name in z.namelist():
-            with open(name, "wb") as f:
-                f.write(z.read(name))
-        await interaction.followup.send("✅ Restore completed. Restart the bot.")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Restore failed: {e}")
 
 @bot.tree.command(name="help", description="Show command list")
 async def help_command(interaction: Interaction):
