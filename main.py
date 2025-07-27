@@ -16,6 +16,12 @@ import zipfile
 import logging
 logging.basicConfig(level=logging.INFO)
 
+def is_owner_check():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        app_info = await interaction.client.application_info()
+        return interaction.user.id == app_info.owner.id
+    return app_commands.check(predicate)
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -168,37 +174,17 @@ async def backup_command(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="restore", description="Bot owner only: Restore data from a zip backup.")
-@app_commands.checks.is_owner()
+@app_commands.check(is_owner_check())
 async def restore_command(interaction: discord.Interaction, file: discord.Attachment):
     try:
-        if not file.filename.endswith(".zip"):
-            await interaction.response.send_message("❌ Please upload a `.zip` file.", ephemeral=True)
-            return
+        data = await file.read()
+        with zipfile.ZipFile(io.BytesIO(data), 'r') as zip_ref:
+            zip_ref.extractall()
 
-        content = await file.read()
-        zip_buffer = io.BytesIO(content)
-
-        with zipfile.ZipFile(zip_buffer, "r") as zip_file:
-            for name in zip_file.namelist():
-                with zip_file.open(name) as f:
-                    try:
-                        decoded = f.read().decode("utf-8")
-                        data = json.loads(decoded)
-                        if "balance" in name:
-                            save_json(BALANCES_FILE, data)
-                        elif "history" in name:
-                            save_json(HISTORY_FILE, data)
-                        elif "config" in name:
-                            save_json(CONFIG_FILE, data)
-                        elif "name_cache" in name:
-                            save_json(NAME_CACHE_FILE, data)
-                    except Exception as inner_e:
-                        print(f"Skipping {name}: {inner_e}")
-
-        await interaction.response.send_message("✅ Restore successful!", ephemeral=True)
-
+        await interaction.response.send_message("✅ Backup restored successfully.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Restore failed: {e}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Failed to restore backup: {e}", ephemeral=True)
+
 
 
 
