@@ -195,27 +195,31 @@ async def restore(interaction: Interaction, file: discord.Attachment):
 
 
 
-@bot.tree.command(name="give", description="Admin-only: Grant currency to a user.")
-@app_commands.describe(user="The user to give currency to", reason="Reason for the grant")
+@bot.tree.command(name="give", description="(Admin) Grant currency to a user")
 @app_commands.check(lambda i: is_admin(i))
-async def give(interaction: Interaction, user: discord.Member, gold: int, silver: int, copper: int, reason: str):
-    balances = load_json(BALANCES_FILE)
-    uid = str(user.id)
-    amount = gold * 10000 + silver * 100 + copper
-    if amount <= 0:
-        await interaction.response.send_message("🚫 Amount must be greater than 0.", ephemeral=True)
-        return
+@app_commands.describe(user="User to give currency to", amount="Total amount in copper (e.g. 12345 = 1g 23s 45c)", reason="Reason for giving currency")
+async def give(interaction: discord.Interaction, user: discord.Member, amount: int, reason: str):
+    await interaction.response.defer(thinking=True, ephemeral=True)
 
-    # Only update once here
-    balances[uid] = balances.get(uid, 0) + amount
-    save_json(BALANCES_FILE, balances)
-    log_transaction(uid, amount, "Grant", reason, interaction.user.id)
+    user_id = str(user.id)
+    balances = load_json("balances.json")
+    transactions = load_json("transactions.json")
 
-    formatted_amount = format_currency(amount)
-    new_balance = format_currency(balances[uid])
-    await interaction.response.send_message(
-        f"✅ Granted {formatted_amount} to {user.mention}. New balance: {new_balance}"
+    current = balances.get(user_id, 0)
+    new_balance = current + amount
+    balances[user_id] = new_balance
+
+    save_json("balances.json", balances)
+
+    transactions.setdefault(user_id, []).insert(0, f"+{amount} — Grant ({reason})")
+    transactions[user_id] = transactions[user_id][:10]
+    save_json("transactions.json", transactions)
+
+    await interaction.followup.send(
+        f"✅ Granted {format_currency(amount)} to {user.mention}. New balance: {format_currency(new_balance)}",
+        ephemeral=False
     )
+
 
 
 
