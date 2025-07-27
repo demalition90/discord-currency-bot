@@ -266,42 +266,37 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
     except Exception as e:
         print(f"[ERROR] /balance failed: {e}")
         await interaction.response.send_message("❌ An internal error occurred while processing your request.", ephemeral=True)
+
+
 @bot.tree.command(name="balances", description="Admin only: View all user balances in this server.")
 @app_commands.checks.has_permissions(administrator=True)
 async def balances_command(interaction: discord.Interaction):
-    balances = load_json(BALANCES_FILE)
-    guild = interaction.guild
+    try:
+        balances = load_json(BALANCES_FILE)
+        guild = interaction.guild
 
-    # Prepare lines
-    lines = []
-    for uid, amount in balances.items():
-        member = guild.get_member(int(uid))
-        name = member.display_name if member else f"User {uid}"
-        lines.append(f"{name}: {format_currency(amount, guild.id)}")
+        if not balances:
+            await interaction.response.send_message("📭 No balances found.", ephemeral=True)
+            return
 
-    if not lines:
-        await interaction.response.send_message("📭 No balances found.", ephemeral=True)
-        return
+        lines = []
+        for uid, amount in balances.items():
+            try:
+                member = guild.get_member(int(uid))
+                name = member.display_name if member else f"User {uid}"
+                lines.append(f"{name}: {format_currency(amount, guild.id)}")
+            except Exception as inner_e:
+                lines.append(f"(Error reading user {uid}): {amount}c")
 
-    # Sort by balance value (descending)
-    lines.sort(key=lambda line: int(balances.get(str(guild.get_member_named(line.split(':')[0]).id, 0))), reverse=True)
+        message = "\n".join(lines)
+        if len(message) > 1900:
+            message = message[:1900] + "\n...(truncated)"
 
-    # Paginate output
-    chunks = []
-    chunk = ""
-    for line in lines:
-        if len(chunk) + len(line) + 1 > 1900:
-            chunks.append(chunk)
-            chunk = ""
-        chunk += line + "\n"
-    if chunk:
-        chunks.append(chunk)
+        await interaction.response.send_message(f"📊 **All User Balances:**\n{message}", ephemeral=True)
 
-    for i, chunk in enumerate(chunks):
-        if i == 0:
-            await interaction.response.send_message(f"📊 **User Balances (page {i+1}/{len(chunks)}):**\n{chunk}", ephemeral=True)
-        else:
-            await interaction.followup.send(f"📊 **User Balances (page {i+1}/{len(chunks)}):**\n{chunk}", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to retrieve balances: `{e}`", ephemeral=True)
+
 
 
 @bot.tree.command(name="request", description="Request currency from the server.")
