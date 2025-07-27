@@ -7,6 +7,10 @@ import asyncio
 import json
 import os
 
+import logging
+logging.basicConfig(level=logging.INFO)
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
