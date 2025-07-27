@@ -150,24 +150,25 @@ async def backup_command(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ Failed to create backup: {e}", ephemeral=True)
 
-@bot.tree.command(name="restore", description="Admin only: upload backup JSON to restore balances and history.")
+@bot.tree.command(name="restore", description="Restore full backup (Admins only).")
 @app_commands.checks.has_permissions(administrator=True)
 async def restore_command(interaction: discord.Interaction, file: discord.Attachment):
-    if not file.filename.endswith(".json"):
-        await interaction.response.send_message("❌ Please upload a `.json` file.", ephemeral=True)
-        return
-
     try:
-        contents = await file.read()
-        data = json.loads(contents)
+        # Download and parse uploaded file
+        backup_bytes = await file.read()
+        backup_data = json.loads(backup_bytes.decode())
 
-        if "balances" in data:
-            save_json(BALANCES_FILE, data["balances"])
-        if "history" in data:
-            save_json(HISTORY_FILE, data["history"])
+        # Validate backup content
+        if not all(k in backup_data for k in ("config", "balances", "history")):
+            await interaction.response.send_message("❌ Invalid backup file format.", ephemeral=True)
+            return
 
-        await interaction.response.send_message("✅ Backup restored successfully.", ephemeral=True)
+        # Save each section to its respective file
+        save_json(CONFIG_FILE, backup_data["config"])
+        save_json(BALANCES_FILE, backup_data["balances"])
+        save_json(HISTORY_FILE, backup_data["history"])
 
+        await interaction.response.send_message("✅ Backup restored successfully!", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Failed to restore backup: {e}", ephemeral=True)
 
