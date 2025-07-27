@@ -1,6 +1,8 @@
 # === Part 1: Imports, Setup, Helpers ===
 
 import discord
+import io
+from discord import File
 from discord.ext import commands
 from discord import app_commands, Interaction
 import asyncio
@@ -97,7 +99,7 @@ async def on_ready():
                 else:
                     await channel.send(
                         "⚠️ Currency bot has restarted and no configuration was found.\n"
-                        "An admin must run `/setup` to reconfigure the bot."
+                        "An admin must run `/setup` to reconfigure the bot. or /restore to restore lost data"
                     )
         except Exception as e:
             print(f"⚠️ Could not send startup message in {guild.name}: {e}")
@@ -134,19 +136,19 @@ async def setup(interaction: Interaction, channel: discord.TextChannel, role: di
     save_json(CONFIG_FILE, config)
     await interaction.response.send_message(f"✅ Setup complete!\nRequests will go to {channel.mention}.\nAdmin role: `{role.name}`\nEmojis: 🪙 {gold} • {silver} • {copper}")
 
-from discord import File
-
-@bot.tree.command(name="backup", description="Admin only: download balances and history files.")
+@bot.tree.command(name="backup", description="Admin only: download full server backup.")
 @app_commands.checks.has_permissions(administrator=True)
 async def backup_command(interaction: discord.Interaction):
     try:
-        balances_file = File(BALANCES_FILE, filename="balances.json")
-        history_file = File(HISTORY_FILE, filename="history.json")
-        await interaction.response.send_message(
-            "📦 Backup files:", files=[balances_file, history_file], ephemeral=True
-        )
+        backup_data = {
+            "config": load_json(CONFIG_FILE),
+            "balances": load_json(BALANCES_FILE),
+            "history": load_json(HISTORY_FILE),
+        }
+        backup_file = File(io.BytesIO(json.dumps(backup_data, indent=2).encode()), filename="full_backup.json")
+        await interaction.response.send_message("💾 Full backup created:", files=[backup_file], ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to send backup files: {e}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Failed to create backup: {e}", ephemeral=True)
 
 @bot.tree.command(name="restore", description="Admin only: upload backup JSON to restore balances and history.")
 @app_commands.checks.has_permissions(administrator=True)
