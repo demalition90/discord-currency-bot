@@ -495,4 +495,4 @@ async def on_guild_join(guild):
         print(f"Failed to send welcome message: {e}")
 
 # ✅ Run the bot
-bot.run("YOUR_BOT_TOKEN")
+bot.run("DISCORD_TOKEN")
