@@ -85,7 +85,6 @@ async def on_ready():
 
 
 # Global check: only allow commands in designated channel (if set)
-@bot.tree.check
 async def global_command_channel_check(interaction: discord.Interaction) -> bool:
     config = load_json(CONFIG_FILE)
     guild_cfg = config.get(str(interaction.guild.id), {})
@@ -688,5 +687,9 @@ async def on_raw_reaction_add(payload):
     save_json(REQUESTS_FILE, reqs)
     save_json(BALANCES_FILE, balances)
     save_json(HISTORY_FILE, history)
+
+
+bot.tree.set_check(global_command_channel_check)
+
 
 bot.run(os.getenv("DISCORD_TOKEN"))
