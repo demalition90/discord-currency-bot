@@ -54,41 +54,46 @@ def is_admin(interaction: Interaction):
 
 @bot.event
 async def on_ready():
-    print(f'✅ Logged in as {bot.user.name}')
+    print(f"✅ Logged in as {bot.user.name}")
     try:
         synced = await bot.tree.sync()
         print(f"✅ Synced {len(synced)} commands")
     except Exception as e:
         print(f"⚠️ Sync failed: {e}")
 
-    # Send online message in all configured request channels
+    # Send startup message to all configured request channels
     config = load_json(CONFIG_FILE)
     for guild_id, cfg in config.items():
-        channel_id = cfg.get("request_channel")
-        if channel_id:
-            guild = bot.get_guild(int(guild_id))
-            channel = guild.get_channel(channel_id) if guild else None
+        try:
+            guild = await bot.fetch_guild(int(guild_id))
+            channel_id = cfg.get("request_channel")
+            if not channel_id:
+                continue
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                channel = await bot.fetch_channel(channel_id)
             if channel:
-                await channel.send("🔄 Currency bot is now online and ready!")
+                await channel.send("🔔 Currency bot is now online and ready!")
+        except Exception as e:
+            print(f"⚠️ Could not send startup message for guild {guild_id}: {e}")
 
 @bot.event
 async def on_guild_join(guild):
-    if guild.system_channel:
-        await guild.system_channel.send(
-            "👋 Thanks for adding me! An admin can now run `/setup` to finish configuration."
+    print(f"➕ Joined new guild: {guild.name} ({guild.id})")
+
+    try:
+        channel = guild.system_channel or next(
+            (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
+            None
         )
-@bot.tree.command(name="setup", description="Configure the bot for this server.")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(channel="Channel for request posts", role="Admin role", gold="Gold emoji (optional)", silver="Silver emoji (optional)", copper="Copper emoji (optional)")
-async def setup(interaction: Interaction, channel: discord.TextChannel, role: discord.Role, gold: str = "g", silver: str = "s", copper: str = "c"):
-    config = load_json(CONFIG_FILE)
-    config[str(interaction.guild.id)] = {
-        "request_channel": channel.id,
-        "admin_roles": [role.id],
-        "emojis": {"gold": gold, "silver": silver, "copper": copper}
-    }
-    save_json(CONFIG_FILE, config)
-    await interaction.response.send_message(f"✅ Setup complete!\nRequests will go to {channel.mention}.\nAdmin role: `{role.name}`.\nEmojis: {gold}, {silver}, {copper}")
+
+        if channel:
+            await channel.send(
+                "👋 Thanks for adding me! Use `/setup` to configure the currency bot.\n"
+                "If you're an admin, run `/setup` to define which role can approve requests and which channel to use."
+            )
+    except Exception as e:
+        print(f"⚠️ Failed to send join message in {guild.name}: {e}")
 
 @bot.tree.command(name="give", description="Admin: Grant currency to a user.")
 @app_commands.describe(user="Recipient", amount="Amount in copper", reason="Reason for grant")
@@ -125,12 +130,35 @@ async def take(interaction: Interaction, user: discord.User, amount: int, reason
     save_json(HISTORY_FILE, log)
 
     await interaction.response.send_message(f"✅ Deducted {format_currency(amount, interaction.guild.id)} from {user.mention}. New balance: {format_currency(balances[uid], interaction.guild.id)}")
-@bot.tree.command(name="balance", description="Check your currency balance.")
-async def balance(interaction: Interaction):
+@bot.tree.command(name="balance", description="Check your balance or another user's (admin only)")
+@app_commands.describe(user="(Admin only) User to check balance for")
+async def balance_command(interaction: discord.Interaction, user: discord.User = None):
     balances = load_json(BALANCES_FILE)
-    uid = str(interaction.user.id)
-    current = balances.get(uid, 0)
-    await interaction.response.send_message(f"💰 Your balance: {format_currency(current, interaction.guild.id)}", ephemeral=False)
+    config = load_json(CONFIG_FILE)
+    guild_id = str(interaction.guild_id)
+    emoji_format = config.get(guild_id, {}).get("emojis", {})
+    gold = emoji_format.get("gold", "g")
+    silver = emoji_format.get("silver", "s")
+    copper = emoji_format.get("copper", "c")
+
+    # Who are we checking balance for?
+    target = user or interaction.user
+    uid = str(target.id)
+
+    # If checking someone else, verify admin
+    if user and interaction.user.id != user.id:
+        admin_roles = config.get(guild_id, {}).get("admin_roles", [])
+        member = interaction.guild.get_member(interaction.user.id)
+        if not member or not any(role.id in admin_roles for role in member.roles):
+            await interaction.response.send_message("❌ You don't have permission to view others' balances.", ephemeral=True)
+            return
+
+    value = balances.get(uid, 0)
+    g = value // 10000
+    s = (value % 10000) // 100
+    c = value % 100
+    msg = f"{target.mention if user else 'Your'} balance: {g} {gold} {s:02} {silver} {c:02} {copper}"
+    await interaction.response.send_message(msg)
 
 @bot.tree.command(name="request", description="Request currency from the server.")
 @app_commands.describe(amount="Amount in copper", reason="Reason for request")
