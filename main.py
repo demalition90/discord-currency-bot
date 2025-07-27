@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import sqlite3
 from datetime import datetime
@@ -9,12 +10,23 @@ intents.message_content = True
 intents.reactions = True
 intents.guilds = True
 intents.members = True
-bot = commands.Bot(command_prefix="/", intents=intents)
+
+class CurrencyBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="/", intents=intents)
+        self.synced = False
+
+    async def setup_hook(self):
+        if not self.synced:
+            await self.tree.sync()
+            self.synced = True
+
+bot = CurrencyBot()
 
 DB_FILE = "currency.db"
 REQUEST_CHANNEL_ID = int(os.environ.get("REQUEST_CHANNEL_ID", "0"))
 
-# Database setup
+# --- Database Setup ---
 conn = sqlite3.connect(DB_FILE)
 c = conn.cursor()
 c.execute("""CREATE TABLE IF NOT EXISTS balances (
@@ -64,92 +76,97 @@ def get_balance(user_id: int) -> int:
     conn.close()
     return result[0] if result else 0
 
-@bot.command()
-async def balance(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    balance = get_balance(member.id)
-    await ctx.send(f"{member.display_name} has {format_currency(balance)}")
+@bot.tree.command(name="balance")
+@app_commands.describe(user="Leave blank to see your own balance")
+async def balance(interaction: discord.Interaction, user: discord.Member = None):
+    user = user or interaction.user
+    balance = get_balance(user.id)
+    await interaction.response.send_message(f"{user.display_name} has {format_currency(balance)}")
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def give(ctx, member: discord.Member, amount: int, *, reason: str = "Manual adjustment"):
-    update_balance(member.id, amount, reason, ctx.author.id)
-    await ctx.send(f"Gave {format_currency(amount)} to {member.display_name} for: {reason}")
+@bot.tree.command(name="transactions")
+async def transactions(interaction: discord.Interaction):
+    user = interaction.user
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT amount, reason, admin_id, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5", (user.id,))
+    results = c.fetchall()
+    conn.close()
+    if not results:
+        await interaction.response.send_message("No transactions found.")
+        return
+    lines = []
+    for amt, reason, admin_id, ts in results:
+        lines.append(f"{format_currency(amt)} | {reason} | by <@{admin_id}> on {ts[:10]}")
+    await interaction.response.send_message("**Last 5 transactions:**\n" + "\n".join(lines))
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def take(ctx, member: discord.Member, amount: int, *, reason: str = "Manual deduction"):
-    update_balance(member.id, -amount, reason, ctx.author.id)
-    await ctx.send(f"Took {format_currency(amount)} from {member.display_name} for: {reason}")
+@bot.tree.command(name="give")
+@app_commands.checks.has_permissions(administrator=True)
+async def give(interaction: discord.Interaction, member: discord.Member, amount: int, reason: str):
+    update_balance(member.id, amount, reason, interaction.user.id)
+    await interaction.response.send_message(f"Gave {format_currency(amount)} to {member.display_name} for: {reason}")
 
-@bot.command()
-async def request(ctx, amount: int, *, reason: str):
+@bot.tree.command(name="take")
+@app_commands.checks.has_permissions(administrator=True)
+async def take(interaction: discord.Interaction, member: discord.Member, amount: int, reason: str):
+    update_balance(member.id, -amount, reason, interaction.user.id)
+    await interaction.response.send_message(f"Took {format_currency(amount)} from {member.display_name} for: {reason}")
+
+@bot.tree.command(name="request")
+async def request(interaction: discord.Interaction, amount: int, reason: str):
     channel = bot.get_channel(REQUEST_CHANNEL_ID)
     if channel is None:
-        await ctx.send("Error: Request channel not found.")
+        await interaction.response.send_message("Error: Request channel not found.", ephemeral=True)
         return
-    embed = discord.Embed(title="Currency Request", description=f"{ctx.author.mention} is requesting {format_currency(amount)}\n**Reason:** {reason}", color=discord.Color.gold())
-    embed.set_footer(text=f"User ID: {ctx.author.id} | Request Amount: {amount}")
+    embed = discord.Embed(title="Currency Request", description=f"{interaction.user.mention} is requesting {format_currency(amount)}\n**Reason:** {reason}", color=discord.Color.gold())
+    embed.set_footer(text=f"User ID: {interaction.user.id} | Request Amount: {amount}")
     message = await channel.send(embed=embed)
     await message.add_reaction("✅")
     await message.add_reaction("❌")
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("INSERT INTO requests (user_id, amount, reason, message_id) VALUES (?, ?, ?, ?)",
-              (ctx.author.id, amount, reason, message.id))
+              (interaction.user.id, amount, reason, message.id))
     conn.commit()
     conn.close()
-    await ctx.send("Your request has been submitted for review.")
+    await interaction.response.send_message("Your request has been submitted for review.")
 
-@bot.command()
-async def transactions(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT amount, reason, admin_id, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5", (member.id,))
-    results = c.fetchall()
-    conn.close()
-    if not results:
-        await ctx.send("No transactions found.")
-        return
-    lines = []
-    for amt, reason, admin_id, ts in results:
-        lines.append(f"{format_currency(amt)} | {reason} | by <@{admin_id}> on {ts[:10]}")
-    await ctx.send(f"**Last 5 transactions for {member.display_name}:**\n" + "\n".join(lines))
-
-@bot.event
-async def on_raw_reaction_add(payload):
-    if payload.user_id == bot.user.id:
-        return
-    if str(payload.emoji) not in ["✅", "❌"]:
+@bot.tree.command(name="rescan_requests")
+@app_commands.checks.has_permissions(administrator=True)
+async def rescan_requests(interaction: discord.Interaction):
+    channel = bot.get_channel(REQUEST_CHANNEL_ID)
+    if not channel:
+        await interaction.response.send_message("Request channel not found.", ephemeral=True)
         return
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT * FROM requests WHERE message_id = ? AND status = 'pending'", (payload.message_id,))
-    request_data = c.fetchone()
-    if not request_data:
-        conn.close()
-        return
-    guild = bot.get_guild(payload.guild_id)
-    member = guild.get_member(payload.user_id)
-    if not member.guild_permissions.administrator:
-        return
-    channel = bot.get_channel(payload.channel_id)
-    message = await channel.fetch_message(payload.message_id)
-    user_id, amount, reason = request_data[1], request_data[2], request_data[3]
-    if str(payload.emoji) == "✅":
-        update_balance(user_id, amount, reason, payload.user_id)
-        status = "approved"
-        await message.reply(f"✅ Approved by {member.display_name}. {format_currency(amount)} added.")
-    elif str(payload.emoji) == "❌":
-        status = "denied"
-        await message.reply(f"❌ Denied by {member.display_name}.")
-    c.execute("UPDATE requests SET status = ? WHERE message_id = ?", (status, payload.message_id))
+    rescanned = 0
+    async for msg in channel.history(limit=100):
+        if not msg.embeds or "Currency Request" not in msg.embeds[0].title:
+            continue
+        c.execute("SELECT * FROM requests WHERE message_id = ? AND status = 'pending'", (msg.id,))
+        if not c.fetchone():
+            continue
+        reactions = {str(r.emoji): r.count for r in msg.reactions}
+        if "✅" in reactions and reactions["✅"] > 1:
+            embed = msg.embeds[0]
+            uid_line = [line for line in embed.footer.text.split() if line.startswith("User")][0]
+            user_id = int(uid_line.split()[2])
+            amount = int(embed.footer.text.split("Amount: ")[-1])
+            reason = embed.description.split("**Reason:** ")[-1]
+            update_balance(user_id, amount, reason, interaction.user.id)
+            await msg.reply(f"✅ Approved by {interaction.user.display_name}. {format_currency(amount)} added.")
+            c.execute("UPDATE requests SET status = 'approved' WHERE message_id = ?", (msg.id,))
+            rescanned += 1
+        elif "❌" in reactions and reactions["❌"] > 1:
+            await msg.reply(f"❌ Denied by {interaction.user.display_name}.")
+            c.execute("UPDATE requests SET status = 'denied' WHERE message_id = ?", (msg.id,))
+            rescanned += 1
     conn.commit()
     conn.close()
+    await interaction.response.send_message(f"Rescan complete. {rescanned} requests processed.")
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("DISCORD_BOT_TOKEN environment variable not set.")
+    print("DISCORD_BOT_TOKEN not set.")
