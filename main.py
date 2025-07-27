@@ -573,12 +573,17 @@ async def transactions_command(interaction: discord.Interaction, user: discord.U
         # Build the summary of up to 10 recent transactions
         msg = "**📜 Your last 10 transactions:**\n"
         for entry in reversed(user_history[-10:]):
-            # Determine a sign based on transaction type
-            sign = "+" if entry.get("type") in ("grant", "transfer_in", "request") else "-"
-            amount_str = format_currency(entry.get("amount"), interaction.guild.id)
-            reason = entry.get("reason", "")
-            tx_type = entry.get("type", "").replace("_", " ").capitalize()
-            msg += f"{sign}{amount_str} — {tx_type} ({reason})\n"
+            if isinstance(entry, dict):
+                # Determine a sign based on transaction type
+                tx_type_raw = entry.get("type")
+                sign = "+" if tx_type_raw in ("grant", "transfer_in", "request") else "-"
+                amount_str = format_currency(entry.get("amount", 0), interaction.guild.id)
+                reason = entry.get("reason", "")
+                tx_type = tx_type_raw.replace("_", " ").capitalize() if tx_type_raw else "Transaction"
+                msg += f"{sign}{amount_str} — {tx_type} ({reason})\n"
+            else:
+                # Legacy string entry; include as-is
+                msg += f"{entry}\n"
         await interaction.followup.send(msg,
                                        ephemeral=True)
     except Exception as e:
