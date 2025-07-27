@@ -170,39 +170,54 @@ async def backup_command(interaction: discord.Interaction):
 
 
 
-@bot.tree.command(name="restore", description="Bot owner only: Restore data from a zip backup.")
-@app_commands.check(is_owner_check())
-async def restore_command(interaction: discord.Interaction, file: discord.Attachment):
-    try:
-        data = await file.read()
-        with zipfile.ZipFile(io.BytesIO(data), 'r') as zip_ref:
-            zip_ref.extractall()
+@bot.tree.command(name="restore", description="Restore from a backup ZIP file.")
+@is_owner_check()
+async def restore(interaction: Interaction, file: discord.Attachment):
+    await interaction.response.defer(thinking=True)
 
-        await interaction.response.send_message("✅ Backup restored successfully.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to restore backup: {e}", ephemeral=True)
-
-
-
-
-
-@bot.tree.command(name="give", description="Admin: Grant currency to a user.")
-@app_commands.describe(user="Recipient", amount="Amount in copper", reason="Reason for grant")
-async def give(interaction: Interaction, user: discord.User, amount: int, reason: str):
-    if not is_admin(interaction):
-        await interaction.response.send_message("❌ You are not authorized.", ephemeral=False)
+    if not file.filename.endswith(".zip"):
+        await interaction.followup.send("🚫 Please upload a valid ZIP file.", ephemeral=True)
         return
 
+    try:
+        zip_bytes = await file.read()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as zipf:
+            for name in zipf.namelist():
+                with zipf.open(name) as f:
+                    with open(name, 'wb') as out_f:
+                        out_f.write(f.read())
+        await interaction.followup.send("✅ Restore complete.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Restore failed: {str(e)}", ephemeral=True)
+
+
+
+
+
+
+@bot.tree.command(name="give", description="Admin-only: Grant currency to a user.")
+@app_commands.describe(user="The user to give currency to", reason="Reason for the grant")
+@is_admin()
+async def give(interaction: Interaction, user: discord.Member, gold: int, silver: int, copper: int, reason: str):
     balances = load_json(BALANCES_FILE)
     uid = str(user.id)
+    amount = gold * 10000 + silver * 100 + copper
+    if amount <= 0:
+        await interaction.response.send_message("🚫 Amount must be greater than 0.", ephemeral=True)
+        return
+
+    # Only update once here
     balances[uid] = balances.get(uid, 0) + amount
     save_json(BALANCES_FILE, balances)
+    log_transaction(uid, amount, "Grant", reason, interaction.user.id)
 
-    log = load_json(HISTORY_FILE)
-    log.setdefault(uid, []).append({"type": "grant", "amount": amount, "reason": reason, "by": interaction.user.id})
-    save_json(HISTORY_FILE, log)
+    formatted_amount = format_currency(amount)
+    new_balance = format_currency(balances[uid])
+    await interaction.response.send_message(
+        f"✅ Granted {formatted_amount} to {user.mention}. New balance: {new_balance}"
+    )
 
-    await interaction.response.send_message(f"✅ Granted {format_currency(amount, interaction.guild.id)} to {user.mention}. New balance: {format_currency(balances[uid], interaction.guild.id)}")
+
 
 @bot.tree.command(name="take", description="Admin: Remove currency from a user.")
 @app_commands.describe(user="Target user", amount="Amount in copper", reason="Reason for deduction")
@@ -221,6 +236,7 @@ async def take(interaction: Interaction, user: discord.User, amount: int, reason
     save_json(HISTORY_FILE, log)
 
     await interaction.response.send_message(f"✅ Deducted {format_currency(amount, interaction.guild.id)} from {user.mention}. New balance: {format_currency(balances[uid], interaction.guild.id)}")
+
 
 @bot.tree.command(name="balance", description="Check your balance or another user's (admin only).")
 @app_commands.describe(user="(Optional) Another user to check the balance of")
@@ -270,6 +286,8 @@ async def balance_command(interaction: Interaction, user: discord.User = None):
 
 
 NAME_CACHE_FILE = "name_cache.json"
+
+
 
 @bot.tree.command(name="balances", description="Admin only: view all user balances.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -331,6 +349,8 @@ async def request(interaction: Interaction, amount: int, reason: str):
 
     await interaction.response.send_message("📝 Your request has been submitted for approval.", ephemeral=False)
 
+
+
 @bot.tree.command(name="transfer", description="Request a currency transfer from one user to another.")
 @app_commands.describe(
     from_user="User sending the currency",
@@ -346,33 +366,58 @@ async def transfer_command(
     reason: str
 ):
     config = load_json(CONFIG_FILE)
-    request_channel_id = config.get("request_channel")
-    admin_roles = config.get("admin_roles", [])
+    guild_config = config.get(str(interaction.guild.id))
+    if not guild_config:
+        await interaction.response.send_message("❌ No configuration found. Please run `/setup`.", ephemeral=True)
+        return
 
-    if not is_admin(interaction) and from_user.id != interaction.user.id:
+    request_channel_id = guild_config.get("request_channel")
+    if not request_channel_id:
+        await interaction.response.send_message("🚫 No request channel configured. Admin must run `/setup`.", ephemeral=True)
+        return
+
+    is_admin_user = is_admin(interaction)
+    if not is_admin_user and from_user.id != interaction.user.id:
         await interaction.response.send_message("❌ You can only request transfers from your own account.", ephemeral=True)
         return
 
-    if not request_channel_id:
-        await interaction.response.send_message("❌ No request channel configured. Admin must run `/setup`.", ephemeral=True)
-        return
+    # Load request queue and store request
+    reqs = load_json(REQUESTS_FILE)
+    req_id = str(interaction.id)
+    reqs[req_id] = {
+        "type": "transfer",
+        "from": str(from_user.id),
+        "to": str(to_user.id),
+        "amount": amount,
+        "reason": reason
+    }
+    save_json(REQUESTS_FILE, reqs)
 
-    channel = interaction.guild.get_channel(int(request_channel_id)) or await interaction.guild.fetch_channel(int(request_channel_id))
-    emojis = config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
-    amount_str = format_currency(amount, emojis)
-
+    # Build embed
+    emojis = guild_config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+    amount_str = format_currency(amount, interaction.guild.id)
     embed = discord.Embed(title="Currency Transfer Request", color=discord.Color.orange())
     embed.add_field(name="From", value=from_user.mention, inline=True)
     embed.add_field(name="To", value=to_user.mention, inline=True)
     embed.add_field(name="Amount", value=amount_str, inline=False)
     embed.add_field(name="Reason", value=reason, inline=False)
-    embed.set_footer(text=f"Request | From: {from_user.id} | To: {to_user.id} | Amount: {amount}")
+    embed.set_footer(text=f"Transfer | From: {from_user.id} | To: {to_user.id} | Amount: {amount}")
 
-    message = await channel.send(embed=embed)
-    await message.add_reaction("✅")
-    await message.add_reaction("❌")
+    # Send embed to request channel
+    channel = interaction.guild.get_channel(request_channel_id)
+    if not channel:
+        try:
+            channel = await interaction.guild.fetch_channel(request_channel_id)
+        except Exception as e:
+            await interaction.response.send_message("❌ Failed to find request channel.", ephemeral=True)
+            return
+
+    msg = await channel.send(embed=embed)
+    await msg.add_reaction("✅")
+    await msg.add_reaction("❌")
 
     await interaction.response.send_message("📨 Transfer request submitted for approval.", ephemeral=True)
+
 
 
 @bot.tree.command(name="transactions", description="View your recent transactions.")
@@ -401,6 +446,8 @@ async def transactions_command(interaction: discord.Interaction, user: discord.U
     await interaction.response.send_message(msg, ephemeral=True)
 
 
+
+
 @bot.tree.command(name="settings", description="Show the current bot config for this server.")
 async def settings(interaction: Interaction):
     config = load_json(CONFIG_FILE).get(str(interaction.guild.id))
@@ -419,6 +466,9 @@ async def settings(interaction: Interaction):
 """
     await interaction.response.send_message(msg.strip(), ephemeral=False)
 
+
+
+
 @bot.tree.command(name="help", description="Show usage and commands.")
 async def help_command(interaction: Interaction):
     await interaction.response.send_message("""🧾 **Currency Bot Commands**
@@ -430,6 +480,10 @@ async def help_command(interaction: Interaction):
 - `/give` and `/take` — (Admin) Grant or remove currency
 - `/rescan_requests` — (Admin) Repost missed requests
 - `/settings` — View config info""", ephemeral=False)
+
+
+
+
 @bot.tree.command(name="refresh", description="Admin: Force re-sync of slash commands.")
 async def refresh(interaction: Interaction):
     if not is_admin(interaction):
@@ -440,6 +494,77 @@ async def refresh(interaction: Interaction):
         await interaction.response.send_message(f"🔁 Synced {len(synced)} commands.", ephemeral=False)
     except Exception as e:
         await interaction.response.send_message(f"⚠️ Sync failed: {e}", ephemeral=False)
+
+
+
+@bot.tree.command(name="rescan_requests", description="Admin: Repost any unprocessed requests (e.g., after a restart).")
+async def rescan_requests(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ You are not authorized.", ephemeral=True)
+        return
+
+    config = load_json(CONFIG_FILE)
+    guild_config = config.get(str(interaction.guild.id))
+    if not guild_config:
+        await interaction.response.send_message("❌ Bot is not configured. Please run `/setup`.", ephemeral=True)
+        return
+
+    request_channel_id = guild_config.get("request_channel")
+    emojis = guild_config.get("emojis", {"gold": "g", "silver": "s", "copper": "c"})
+    reqs = load_json(REQUESTS_FILE)
+
+    if not reqs:
+        await interaction.response.send_message("📭 No pending requests found.", ephemeral=True)
+        return
+
+    channel = interaction.guild.get_channel(request_channel_id)
+    if not channel:
+        try:
+            channel = await interaction.guild.fetch_channel(request_channel_id)
+        except Exception as e:
+            await interaction.response.send_message("❌ Could not fetch request channel.", ephemeral=True)
+            return
+
+    reposted = 0
+    for key, data in reqs.items():
+        try:
+            if data["type"] == "request":
+                user = await interaction.client.fetch_user(int(data["user_id"]))
+                amount_str = format_currency(data["amount"], interaction.guild.id)
+                embed = discord.Embed(
+                    title="Currency Request",
+                    description=f"{user.mention} is requesting {amount_str}\nReason: {data['reason']}",
+                    color=0xF1C40F
+                )
+                embed.set_footer(text=f"Request | User: {data['user_id']} | Amount: {data['amount']}")
+
+            elif data["type"] == "transfer":
+                from_user = await interaction.client.fetch_user(int(data["from"]))
+                to_user = await interaction.client.fetch_user(int(data["to"]))
+                amount_str = format_currency(data["amount"], interaction.guild.id)
+                embed = discord.Embed(title="Currency Transfer Request", color=discord.Color.orange())
+                embed.add_field(name="From", value=from_user.mention, inline=True)
+                embed.add_field(name="To", value=to_user.mention, inline=True)
+                embed.add_field(name="Amount", value=amount_str, inline=False)
+                embed.add_field(name="Reason", value=data["reason"], inline=False)
+                embed.set_footer(text=f"Transfer | From: {data['from']} | To: {data['to']} | Amount: {data['amount']}")
+
+            else:
+                continue  # Skip unknown types
+
+            msg = await channel.send(embed=embed)
+            await msg.add_reaction("✅")
+            await msg.add_reaction("❌")
+            reposted += 1
+
+        except Exception as e:
+            print(f"[rescan_requests] Failed to repost a request: {e}")
+            continue
+
+    await interaction.response.send_message(f"🔄 Reposted {reposted} request(s).", ephemeral=True)
+
+
+
 
 @bot.event
 async def on_raw_reaction_add(payload):
