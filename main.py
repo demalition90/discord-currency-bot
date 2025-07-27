@@ -299,3 +299,9 @@ async def on_raw_reaction_add(payload):
     save_json(REQUESTS_FILE, reqs)
     save_json(BALANCES_FILE, balances)
     save_json(HISTORY_FILE, history)
+if __name__ == "__main__":
+    TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+    if not TOKEN:
+        print("❌ DISCORD_BOT_TOKEN environment variable not found.")
+    else:
+        bot.run(TOKEN)
