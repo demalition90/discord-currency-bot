@@ -111,17 +111,15 @@ async def setup(
 
     save_json(CONFIG_FILE, config)
 
-def log_transaction(guild_id, tx_type, user_id, amount, reason):
-    transactions = load_json(HISTORY_FILE)
-    transactions.append({
-        "guild": guild_id,
-        "type": tx_type,
-        "user": user_id,
-        "amount": amount,
-        "reason": reason,
-        "timestamp": datetime.utcnow().isoformat()
-    })
-    save_json(HISTORY_FILE, transactions)
+    await interaction.response.send_message(
+        f"✅ Setup complete!\n"
+        f"Bot commands allowed only in {bot_channel.mention}\n"
+        f"Requests will be posted in {request_channel.mention}\n"
+        f"Admin role: {admin_role.name}\n"
+        f"Emojis: {gold} • {silver} • {copper}",
+        ephemeral=False
+    )
+
 
 @bot.tree.command(name="restore", description="Admin-only: Upload backup ZIP")
 @commands.check(is_admin)
