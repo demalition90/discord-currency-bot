@@ -91,7 +91,7 @@ async def request(interaction: Interaction, amount: int, reason: str):
     requests[request_id] = {"user_id": user_id, "amount": amount, "reason": reason}
     save_requests(requests)
 
-    embed = discord.Embed(title="Currency Request", description=f"{interaction.user.mention} is requesting {format_currency(amount)}
+    embed = discord.Embed(title="Currency Request", description=f"{interaction.user.mention} is requesting {format_currency(amount)}"
 Reason: {reason}", color=0xF1C40F)
     embed.set_footer(text=f"User ID: {user_id} | Request Amount: {amount}")
     message = await interaction.channel.send(embed=embed)
