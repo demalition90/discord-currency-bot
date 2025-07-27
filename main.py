@@ -76,6 +76,21 @@ async def on_ready():
 
 import os  # Add this at the top of your file if not already imported
 
+
+# Global check: only allow commands in designated channel (if set)
+@bot.tree.check
+async def global_command_channel_check(interaction: discord.Interaction) -> bool:
+    config = load_json(CONFIG_FILE)
+    guild_cfg = config.get(str(interaction.guild.id), {})
+    allowed_channel = guild_cfg.get("command_channel")
+
+    # If no restriction is set, allow it
+    if not allowed_channel:
+        return True
+
+    # Only allow in the configured command channel
+    return interaction.channel_id == allowed_channel
+
 # === Bot Startup Events ===
 
 @bot.event
@@ -136,16 +151,30 @@ async def on_guild_join(guild):
 
 @bot.tree.command(name="setup", description="Configure the bot for this server.")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(channel="Channel for request posts", role="Admin role", gold="Gold emoji (optional)", silver="Silver emoji (optional)", copper="Copper emoji (optional)")
-async def setup(interaction: Interaction, channel: discord.TextChannel, role: discord.Role, gold: str = "g", silver: str = "s", copper: str = "c"):
+@app_commands.describe(
+    request_channel="Channel for request posts",
+    command_channel="Channel for command usage",
+    role="Admin role",
+    gold="Gold emoji (optional)",
+    silver="Silver emoji (optional)",
+    copper="Copper emoji (optional)"
+)
+async def setup(interaction: Interaction, request_channel: discord.TextChannel, command_channel: discord.TextChannel, role: discord.Role, gold: str = "g", silver: str = "s", copper: str = "c"):
     config = load_json(CONFIG_FILE)
     config[str(interaction.guild.id)] = {
-        "request_channel": channel.id,
+        "request_channel": request_channel.id,
+        "command_channel": command_channel.id,
         "admin_roles": [role.id],
         "emojis": {"gold": gold, "silver": silver, "copper": copper}
     }
     save_json(CONFIG_FILE, config)
-    await interaction.response.send_message(f"✅ Setup complete!\nRequests will go to {channel.mention}.\nAdmin role: `{role.name}`\nEmojis: 🪙 {gold} • {silver} • {copper}")
+    await interaction.response.send_message(
+        f"✅ Setup complete!\n"
+        f"Commands: {command_channel.mention}\n"
+        f"Requests: {request_channel.mention}\n"
+        f"Admin role: `{role.name}`\n"
+        f"Emojis: {gold} • {silver} • {copper}"
+    )
 
 
 
