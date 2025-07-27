@@ -61,21 +61,47 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Sync failed: {e}")
 
-    # Send startup message to all configured request channels
-    config = load_json(CONFIG_FILE)
-    for guild_id, cfg in config.items():
+import os  # Add this at the top of your file if not already imported
+
+# === Bot Startup Events ===
+
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user.name}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} commands")
+    except Exception as e:
+        print(f"⚠️ Sync failed: {e}")
+
+    config_exists = os.path.exists(CONFIG_FILE)
+    config = load_json(CONFIG_FILE) if config_exists else {}
+
+    for guild in bot.guilds:
         try:
-            guild = await bot.fetch_guild(int(guild_id))
+            cfg = config.get(str(guild.id), {})
             channel_id = cfg.get("request_channel")
-            if not channel_id:
-                continue
-            channel = guild.get_channel(channel_id)
-            if not channel:
-                channel = await bot.fetch_channel(channel_id)
+            channel = None
+
+            if channel_id:
+                channel = guild.get_channel(channel_id)
+                if not channel:
+                    channel = await bot.fetch_channel(channel_id)
+            else:
+                # fallback if no config: use system channel or #general
+                channel = guild.system_channel or discord.utils.get(guild.text_channels, name="general")
+
             if channel:
-                await channel.send("🔔 Currency bot is now online and ready!")
+                if config_exists and str(guild.id) in config:
+                    await channel.send("🔔 Currency bot is now online and ready!")
+                else:
+                    await channel.send(
+                        "⚠️ Currency bot has restarted and no configuration was found.\n"
+                        "An admin must run `/setup` to reconfigure the bot."
+                    )
         except Exception as e:
-            print(f"⚠️ Could not send startup message for guild {guild_id}: {e}")
+            print(f"⚠️ Could not send startup message in {guild.name}: {e}")
+
 
 @bot.event
 async def on_guild_join(guild):
