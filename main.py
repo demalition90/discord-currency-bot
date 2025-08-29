@@ -209,23 +209,29 @@ async def setup(interaction: Interaction, channel: discord.TextChannel, role: di
     )
 
 
-@bot.tree.command(name="backup", description="Admin only: download all config and data files.")
-@app_commands.checks.has_permissions(administrator=True)
+@bot.tree.command(name="backup", description="Download all config and data files (admin only).")
+@app_commands.check(lambda i: is_admin(i))
 async def backup_command(interaction: Interaction):
+    """Allow an administrator (as defined in the bot's config) to download a ZIP backup of all data files."""
+    # Restrict to designated channel
     if not await enforce_request_channel(interaction):
         return
+    # Defer immediately to avoid timeouts
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         zip_name = f"currency_backup_{timestamp}.zip"
+        # Create a zip archive containing the config, balances, requests and history files
         with zipfile.ZipFile(zip_name, 'w') as zipf:
             for filename in [CONFIG_FILE, BALANCES_FILE, REQUESTS_FILE, HISTORY_FILE]:
                 if os.path.exists(filename):
                     zipf.write(filename)
         backup_file = File(zip_name)
+        # Send the file as an attachment
         await interaction.followup.send("📦 Backup file:", file=backup_file, ephemeral=True)
         os.remove(zip_name)
     except Exception as e:
+        # Provide a helpful error if something goes wrong
         await interaction.followup.send(f"❌ Failed to create backup: {e}",
                                        ephemeral=True)
 
@@ -238,13 +244,19 @@ def owner_check():
     return app_commands.check(predicate)
 
 
-@bot.tree.command(name="restore", description="Restore from a backup ZIP file.")
-@owner_check()
+@bot.tree.command(name="restore", description="Restore data from a backup ZIP file.")
+@app_commands.check(lambda i: is_admin(i))
 async def restore(interaction: Interaction, file: discord.Attachment):
+    """Allow an administrator to restore all data files from an uploaded backup ZIP archive."""
+    # Restrict to designated channel
     if not await enforce_request_channel(interaction):
         return
+    # Only allow application owner or admin
+    # (we already enforced admin via the decorator, owner can also run it automatically)
+    # Note: you can adjust this logic if you want to further restrict restore to owners only
     await interaction.response.defer(ephemeral=True, thinking=True)
-    if not file.filename.endswith(".zip"):
+    # Validate file extension
+    if not file.filename.lower().endswith(".zip"):
         await interaction.followup.send("🚫 Please upload a valid ZIP file.",
                                        ephemeral=True)
         return
@@ -471,14 +483,33 @@ async def request_command(interaction: Interaction, balance: str, amount: int, r
             color=discord.Color.gold()
         )
         embed.set_footer(text=f"Request | User: {interaction.user.id} | Balance: {balance} | Amount: {amount}")
-        msg = await channel.send(embed=embed)
-        await msg.add_reaction("✅")
-        await msg.add_reaction("❌")
-        await interaction.followup.send("📝 Your request has been submitted for approval.",
-                                       allowed_mentions=discord.AllowedMentions.none())
+        try:
+            msg = await channel.send(embed=embed)
+            await msg.add_reaction("✅")
+            await msg.add_reaction("❌")
+        except discord.Forbidden:
+            # Bot lacks permission to post in the request channel
+            await interaction.followup.send(
+                "❌ Failed to submit request: the bot does not have permission to send messages in the request channel.",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            return
+        except Exception as send_err:
+            await interaction.followup.send(
+                f"❌ Failed to submit request: {send_err}",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            return
+        # If embed posting succeeded
+        await interaction.followup.send(
+            "📝 Your request has been submitted for approval.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to submit request: {e}",
-                                       allowed_mentions=discord.AllowedMentions.none())
+        await interaction.followup.send(
+            f"❌ Failed to submit request: {e}",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
 
 
 @bot.tree.command(name="transfer", description="Request a currency transfer from one user to another.")
@@ -550,14 +581,31 @@ ephemeral=True
         embed.add_field(name="Reason", value=reason, inline=False)
         embed.set_footer(text=f"Transfer | From: {from_user.id} | To: {to_user.id} | Balance: {balance} | Amount: {amount}")
         channel = interaction.guild.get_channel(req_channel_id) or await interaction.guild.fetch_channel(req_channel_id)
-        msg = await channel.send(embed=embed)
-        await msg.add_reaction("✅")
-        await msg.add_reaction("❌")
-        await interaction.followup.send("📨 Transfer request submitted for approval.",
-                                       allowed_mentions=discord.AllowedMentions.none())
+        try:
+            msg = await channel.send(embed=embed)
+            await msg.add_reaction("✅")
+            await msg.add_reaction("❌")
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Failed to submit transfer: the bot does not have permission to send messages in the request channel.",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            return
+        except Exception as send_err:
+            await interaction.followup.send(
+                f"❌ Failed to submit transfer: {send_err}",
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+            return
+        await interaction.followup.send(
+            "📨 Transfer request submitted for approval.",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to submit transfer: {e}",
-                                       allowed_mentions=discord.AllowedMentions.none())
+        await interaction.followup.send(
+            f"❌ Failed to submit transfer: {e}",
+            allowed_mentions=discord.AllowedMentions.none()
+        )
 
 
 @bot.tree.command(name="transactions", description="View your recent transactions.")
