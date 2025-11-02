@@ -20,7 +20,7 @@ REQUESTS_FILE = "requests.json"
 HISTORY_FILE  = "transactions.json"
 
 # Hardcoded restore override (update to YOUR Discord user ID if needed)
-EUGENE_ID_OVERRIDE = 157650336535079168
+EUGENE_ID_OVERRIDE = 157650335635079168
 
 # ---------- LOGGING ----------
 import logging
