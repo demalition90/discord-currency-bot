@@ -193,20 +193,35 @@ async def backup_command(interaction: Interaction):
 
 @bot.tree.command(name="restore", description="Restore data from a backup ZIP file.")
 async def restore(interaction: Interaction, file: discord.Attachment):
-    # Override: allow this specific user OR any admin
+    # Allow Eugene override OR any admin
     if not (is_admin(interaction) or interaction.user.id == EUGENE_ID_OVERRIDE):
         await interaction.response.send_message("❌ You are not authorized to use /restore.", ephemeral=True)
         return
-    if not await enforce_request_channel(interaction):
-        return
-    await interaction.response.defer(ephemeral=True, thinking=True)
 
-    if not file.filename.lower().endswith(".zip"):
+    # If a config exists, enforce the configured command channel.
+    cfg = load_json(CONFIG_FILE).get(str(interaction.guild.id))
+    if cfg:
+        if not await enforce_request_channel(interaction):
+            return
+        # We already sent a response inside enforce_request_channel in the failure path.
+        # If we’re here, we’re in the right channel and can defer now.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+    else:
+        # No config yet -> allow restore anywhere (first-time bootstrap)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.InteractionResponded:
+            pass
+
+    # Validate the attachment
+    if not file or not file.filename.lower().endswith(".zip"):
         await interaction.followup.send("🚫 Please upload a valid ZIP file.", ephemeral=True)
         return
 
+    # Do the restore
     try:
         zip_bytes = await file.read()
+        import io, zipfile
         with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zipf:
             for name in zipf.namelist():
                 with zipf.open(name) as src, open(name, "wb") as dst:
